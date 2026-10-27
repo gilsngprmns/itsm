@@ -1,16 +1,19 @@
 # Local PostgreSQL setup and migration policy
 
-The API connects to the existing local PostgreSQL database named `it_db`.
-Read-only inspection verified PostgreSQL 18.4 at `127.0.0.1:5432` using the
-local `.env` credentials. The target remains `it_db`; do not switch it to
-`itsm_db`.
+This section describes the intended local development setup; it does not
+verify the current target configured in `.env`. Before running database
+commands, verify the active target independently and confirm that it is the
+intended local database. Do not infer the target from this documentation or
+from a successful API health check.
 
 ## Local connection
 
-1. Ensure PostgreSQL is running and database `it_db` exists.
+1. Ensure PostgreSQL is running and the intended local development database
+   exists.
 2. Copy `.env.example` to `.env` if the local file does not exist.
 3. Set `DATABASE_URL` to the local PostgreSQL username/password, host, port,
-   and `it_db` database. Keep the real credentials in `.env` only.
+   and intended development database. Keep the real credentials in `.env`
+   only.
 4. Start the API with `pnpm.cmd dev:api` on Windows.
 
 The backend loads the root `.env` consistently from both source and compiled
@@ -228,40 +231,108 @@ migration-history table because none existed before this phase.
 ## ORM and migration strategy
 
 TypeORM 0.3 was selected for its NestJS/PostgreSQL integration and explicit
-migration tooling. The live database has no historical migration records, so
-the ticket migration is deliberately additive and scoped to the already
-existing ticket schema; it is not presented as a baseline migration for the
-other tables. Review `apps/api/src/database/migrations` before applying it.
-Do not generate a full initial migration from an empty entity model.
+migration tooling. Migration 219 is the reviewed baseline for a new empty
+database: it creates the 26 application tables, accepts a fully present
+matching baseline schema, and refuses partial or mismatched schemas. Migration
+220 is additive to the existing ticket schema; migrations 221 and 222 add
+ticket-type/support and asset-code/shared-asset functionality. Review every
+source in `apps/api/src/database/migrations` before applying it. Never assume
+the configured database is empty or matches this baseline.
 
-Inspect whether migration history exists and, if present, list applied
-migrations. This repository command reads catalog/table data only and does not
+Inspect migration status with the repository script. The command rebuilds the
+API, loads the compiled data source, lists migrations TypeORM discovers, and
+checks that every applied history record has a matching migration source. It
+only reads catalog and migration-history data; it does not run migrations or
 create a migration metadata table:
 
 ```powershell
 pnpm.cmd db:migration:show
 ```
 
-Only after a migration is reviewed and a backup is verified, migrations can be
-run explicitly:
+The build excludes integration tests, so production output is emitted under
+`apps/api/dist/` (for example, `dist/database/data-source.js` and
+`dist/database/migrations/*.js`). The CLI scripts rebuild before loading this
+output, preventing stale compiled files from masking missing migration
+sources. The application retains its 3-second statement timeout; the CLI data
+source uses a bounded 30-second timeout for migration statements so DDL and
+table-lock waits are not constrained by the shorter request timeout.
+
+Only after the configured target is positively identified, the migration
+reviewed, and a backup verified, pending migrations can be run explicitly:
 
 ```powershell
 pnpm.cmd db:migration:run
 ```
 
 `migration:run` is not run during app startup. It can create TypeORM migration
-metadata as part of applying migrations. Do not use schema synchronization.
+metadata as part of applying migrations. Before execution, the runner opens a
+transaction and takes a PostgreSQL advisory transaction lock. It validates
+the migration history and schema on the same connection, then runs TypeORM's
+migrations in that transaction. Concurrent invocations of this repository
+runner serialize on the lock; do not bypass it with the TypeORM CLI directly.
+
+If migration 219 is pending, an empty database or an exact existing baseline
+schema is allowed, and the baseline runs before checks for migrations 220-225.
+A partially populated schema or unrelated public tables are rejected. If
+migration 219 is already recorded, required baseline tables and prerequisites
+for pending migrations are checked before any migration begins. Unknown,
+duplicate, or out-of-order history records are rejected. A failure rolls back
+both schema changes and migration-history records. Migration 220 remains
+additive and does not create the baseline schema. Migrations 223-224 seed the
+core roles and complete their asset permission mappings; migration 225
+increases the asset-tag length and recreates the inventory and ticket views.
+The source-history preflight requires all seven migrations to be present.
+
+The shared database options normalize PostgreSQL URL modes `prefer`, `require`,
+and `verify-ca` to `verify-full`. This matches the installed driver behavior
+that prompted the compatibility warning and explicitly retains certificate
+and hostname verification across future driver versions. `sslmode=no-verify`
+is rejected. Other provider-required URL parameters are preserved. Do not
+disable TLS or certificate verification.
+
+Keep local PostgreSQL dumps in the ignored root `backup/` directory or another
+approved protected backup location. Do not commit or upload database dumps;
+they may contain production or personal data.
+
+TypeORM supports reverting the most recent migration:
+
+```powershell
+pnpm.cmd db:migration:revert
+```
+
+Use this only when the database history matches the checked-out migration
+sources, the migration's `down` operation is understood and safe for existing
+data, and a verified backup is available. Prefer a reviewed forward migration
+for shared or production databases.
+
+Rollback risks for the current migration sources:
+
+- Migration 219 intentionally refuses to reverse the baseline schema.
+- Migration 220 drops `location_id` and `resolution_summary`; values written
+  after deployment would be lost.
+- Migration 221 drops ticket type history and the `type` column, and removes
+  IT_SUPPORT role assignments and permission/role records.
+- Migration 222 drops asset codes and shared-asset flags, including values
+  generated or updated after deployment, and removes related permissions.
+- Migrations 223-224 intentionally refuse rollback because users and
+  assignments may depend on the seeded roles and permissions.
+- Migration 225 cannot shrink asset tags when any value exceeds 60 characters;
+  it also drops and recreates the two inventory views during either direction.
+
+Do not use automated rollback as a routine release strategy for these
+migrations. Use a reviewed forward migration or a separately approved restore.
 
 ## Isolated integration-test database
 
 Default unit tests use mocked PostgreSQL access and never write to a database.
-The opt-in schema smoke test requires an explicitly configured
-`TEST_DATABASE_URL` and rejects all targets except the loopback PostgreSQL
-database named `it_db_phase09_test`. It does not read the root `DATABASE_URL`,
-run migrations, synchronize schema, or write database rows.
+The opt-in integration suite requires an explicitly configured
+`TEST_DATABASE_URL`. Outside CI, it accepts only the loopback PostgreSQL
+database named `it_db_phase09_test`; in CI, it additionally accepts the
+ephemeral loopback service database `itsm_ci_test`. It never reads the root
+`DATABASE_URL`.
 
-Run it from PowerShell only after an owner has reviewed and provisioned the
-isolated database and its schema:
+Run it from PowerShell only after an owner has reviewed and verified that the
+dedicated database is disposable:
 
 ```powershell
 $env:TEST_DATABASE_URL = 'postgresql://<test-user>:<test-password>@127.0.0.1:5432/it_db_phase09_test'
@@ -269,24 +340,27 @@ pnpm.cmd --filter api test:integration
 Remove-Item Env:TEST_DATABASE_URL
 ```
 
-The URL must point to a local loopback host and the exact dedicated database
-name; the test fails before connecting when the value is absent, targets
-`it_db`, or points to a remote host. Do not place the URL in a `VITE_`
-variable, source control, or command output.
+The URL must point to a local loopback host and an allowed dedicated database
+name; the test fails before connecting when the value is absent, targets a
+different local database, or points to a remote host. The suite applies
+project migrations, creates temporary user/asset/ticket fixtures, exercises
+database and HTTP workflows, and deletes those fixtures afterward. It is
+therefore a **database-writing test**, not a read-only smoke test. Never point
+it at a database containing user or production data. Do not place the URL in a
+`VITE_` variable, source control, or command output.
 
-At the time of Phase 09 audit, `it_db_phase09_test` did not exist and the repo
-has no complete baseline schema migration or deterministic fixture loader.
-The integration command is therefore **BLOCKED** until the owner provisions a
-dedicated database from a reviewed schema snapshot and creates isolated
-fixtures. Do not derive and restore the schema automatically from `it_db`;
-review its impact and provenance first. The available test only verifies
-database identity and presence of domain tables—it does not yet test user,
-asset, ticket, transaction, or report CRUD against PostgreSQL.
+The local integration target was not verified or used during this recovery.
+Before running the command, the owner must confirm that
+`it_db_phase09_test` exists, is disposable, and is isolated from all user
+data. The suite can apply the full migration history to an empty database; it
+does not need a restored copy of `it_db`. Do not automatically create or
+restore the database, and do not run the suite until its target is verified.
+GitHub Actions uses an ephemeral PostgreSQL service named `itsm_ci_test`.
 
-Never add automatic `DROP DATABASE`, `DROP TABLE`, `TRUNCATE`, or migration
-commands to the integration runner. If a reusable schema baseline and fixture
-workflow is approved later, migrations and CRUD tests must target only
-`it_db_phase09_test`, with the same database-name and loopback safeguards.
+The integration runner never drops the database or truncates tables, but it
+does apply migrations and delete only its generated fixture rows. Its safety
+depends on the URL guard, verified test target, and fixture identifiers. Keep
+the loopback and exact-name safeguards if the test setup changes.
 
 ## Read-only schema inspection
 

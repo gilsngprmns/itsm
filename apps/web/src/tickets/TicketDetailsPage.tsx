@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+import { formatDateTime, formatDateTimeFull } from '../common/format'
+import { StatusBadge, statusLabel } from '../common/StatusBadge'
 import { apiRequest } from '../lib/api'
 import { ticketErrorMessage } from './ticket-errors'
+import { announceTicketChanged, onTicketChanged } from './ticket-events'
 import {
   STATUS_TRANSITIONS,
+  TICKET_TYPES,
   type Ticket,
   type TicketComment,
   type TicketCategory,
@@ -21,6 +25,12 @@ export function TicketDetailsPage() {
   const { id } = useParams()
   const { user } = useAuth()
   const canUpdate = user?.permissions.includes('tickets.update') ?? false
+  const canUpdateAssigned =
+    user?.permissions.includes('tickets.update.assigned') ?? false
+  const canEditDetails = canUpdate
+  const canManageAssigned = canUpdate || canUpdateAssigned
+  const canSelfAssign =
+    user?.permissions.includes('tickets.self_assign') ?? false
   const canAssign = user?.permissions.includes('tickets.assign') ?? false
   const canComment = user?.permissions.includes('tickets.comment') ?? false
   const [ticket, setTicket] = useState<Ticket | null>(null)
@@ -38,6 +48,7 @@ export function TicketDetailsPage() {
   const [editDescription, setEditDescription] = useState('')
   const [editCategoryId, setEditCategoryId] = useState('')
   const [editPriority, setEditPriority] = useState<Ticket['priority']>('MEDIUM')
+  const [editType, setEditType] = useState<Ticket['type']>('INCIDENT')
   const [isInternal, setIsInternal] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -57,6 +68,7 @@ export function TicketDetailsPage() {
       setEditDescription(ticketResult.description)
       setEditCategoryId(ticketResult.category?.id ?? '')
       setEditPriority(ticketResult.priority)
+      setEditType(ticketResult.type)
       setComments(commentResult)
       setHistory(historyResult)
       setAssigneeId(ticketResult.assignee?.id ?? '')
@@ -80,6 +92,16 @@ export function TicketDetailsPage() {
       active = false
     }
   }, [loadTicket])
+
+  useEffect(
+    () =>
+      onTicketChanged(({ ticketId }) => {
+        if (ticketId !== id) return
+        setLoading(true)
+        void loadTicket()
+      }),
+    [id, loadTicket],
+  )
 
   useEffect(() => {
     if (!canAssign) return
@@ -126,9 +148,8 @@ export function TicketDetailsPage() {
       setNextStatus('')
       setResolutionSummary('')
       setStatusReason('')
-      setNotice(`Ticket updated to ${nextStatus.replace('_', ' ')}.`)
-      setLoading(true)
-      await loadTicket()
+      setNotice(`Ticket updated to ${statusLabel(nextStatus)}.`)
+      announceTicketChanged(id)
     } catch (cause) {
       setError(ticketErrorMessage(cause, 'update ticket status'))
     } finally {
@@ -154,8 +175,7 @@ export function TicketDetailsPage() {
         }),
       })
       setNotice('Ticket assignment updated.')
-      setLoading(true)
-      await loadTicket()
+      announceTicketChanged(id)
     } catch (cause) {
       setError(ticketErrorMessage(cause, 'update ticket assignment'))
     } finally {
@@ -178,13 +198,53 @@ export function TicketDetailsPage() {
           description: editDescription,
           ...(editCategoryId ? { categoryId: editCategoryId } : {}),
           priority: editPriority,
+          type: editType,
         }),
       })
       setNotice('Ticket details updated.')
+      announceTicketChanged(id)
       setLoading(true)
       await loadTicket()
     } catch (cause) {
       setError(ticketErrorMessage(cause, 'update ticket details'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const updateType = async () => {
+    if (!id || !ticket || ticket.type === editType) return
+    setSaving(true)
+    setError(null)
+    setNotice(null)
+    try {
+      await apiRequest<Ticket>(`tickets/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: editType }),
+      })
+      setNotice('Ticket type updated.')
+      announceTicketChanged(id)
+      setLoading(true)
+      await loadTicket()
+    } catch (cause) {
+      setError(ticketErrorMessage(cause, 'update ticket type'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const assignToMe = async () => {
+    if (!id) return
+    setSaving(true)
+    setError(null)
+    setNotice(null)
+    try {
+      await apiRequest<Ticket>(`tickets/${id}/assign-to-me`, { method: 'POST' })
+      setNotice('Ticket assigned to you.')
+      announceTicketChanged(id)
+    } catch (cause) {
+      setError(ticketErrorMessage(cause, 'assign the ticket to yourself'))
     } finally {
       setSaving(false)
     }
@@ -208,6 +268,7 @@ export function TicketDetailsPage() {
       setCommentBody('')
       setIsInternal(false)
       setNotice(isInternal ? 'Internal note added.' : 'Comment added.')
+      announceTicketChanged(id)
       setLoading(true)
       await loadTicket()
     } catch (cause) {
@@ -241,15 +302,20 @@ export function TicketDetailsPage() {
     <main className="page management-page">
       <header className="page-header">
         <div>
-          <p className="eyebrow">{ticket.ticketNumber}</p>
           <h1>{ticket.subject}</h1>
-          <p className="intro">
-            <span className="status-pill">
-              {ticket.status.replace('_', ' ')}
-            </span>{' '}
-            {ticket.priority}
+          <p className="ticket-meta">
+            {ticket.ticketNumber} <StatusBadge value={ticket.status} />{' '}
+            <StatusBadge value={ticket.priority} />
+            <span className="ticket-type-marker">
+              {ticket.type === 'SERVICE_REQUEST'
+                ? 'Service request'
+                : 'Incident'}
+            </span>
           </p>
         </div>
+        <Link className="button-link" to={`/tickets/${id}/print`}>
+          Print ticket
+        </Link>
       </header>
       {notice && (
         <p className="notice" role="status">
@@ -269,6 +335,14 @@ export function TicketDetailsPage() {
         <h2 id="ticket-details-heading">Ticket details</h2>
         <dl className="detail-grid">
           <div>
+            <dt>Type</dt>
+            <dd>
+              {ticket.type === 'SERVICE_REQUEST'
+                ? 'Service request'
+                : 'Incident'}
+            </dd>
+          </div>
+          <div>
             <dt>Requester</dt>
             <dd>{ticket.requester.fullName}</dd>
           </div>
@@ -278,23 +352,37 @@ export function TicketDetailsPage() {
           </div>
           <div>
             <dt>Category</dt>
-            <dd>{ticket.category?.name ?? '—'}</dd>
+            <dd>{ticket.category?.name ?? 'Uncategorized'}</dd>
           </div>
           <div>
             <dt>Related asset</dt>
             <dd>
-              {ticket.asset
-                ? `${ticket.asset.assetTag} — ${ticket.asset.name}`
-                : '—'}
+              {ticket.asset ? (
+                <>
+                  <span className="asset-reference">
+                    {ticket.asset.assetTag}
+                  </span>{' '}
+                  {ticket.asset.name}
+                </>
+              ) : (
+                'Not linked'
+              )}
             </dd>
           </div>
           <div>
             <dt>Location</dt>
-            <dd>{ticket.location?.name ?? '—'}</dd>
+            <dd>{ticket.location?.name ?? 'No location'}</dd>
           </div>
           <div>
             <dt>Created</dt>
-            <dd>{new Date(ticket.createdAt).toLocaleString()}</dd>
+            <dd>
+              <time
+                dateTime={ticket.createdAt}
+                title={formatDateTimeFull(ticket.createdAt)}
+              >
+                {formatDateTime(ticket.createdAt)}
+              </time>
+            </dd>
           </div>
           <div className="field-wide">
             <dt>Description</dt>
@@ -309,7 +397,7 @@ export function TicketDetailsPage() {
         </dl>
       </section>
 
-      {canUpdate &&
+      {canEditDetails &&
         ticket.status !== 'CLOSED' &&
         ticket.status !== 'CANCELLED' && (
           <section className="form-panel" aria-labelledby="edit-ticket-heading">
@@ -335,6 +423,23 @@ export function TicketDetailsPage() {
                   {categories.map((category) => (
                     <option key={category.id} value={category.id}>
                       {category.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Type
+                <select
+                  value={editType}
+                  onChange={(event) =>
+                    setEditType(event.target.value as Ticket['type'])
+                  }
+                >
+                  {TICKET_TYPES.map((value) => (
+                    <option key={value} value={value}>
+                      {value === 'SERVICE_REQUEST'
+                        ? 'Service request'
+                        : 'Incident'}
                     </option>
                   ))}
                 </select>
@@ -375,7 +480,7 @@ export function TicketDetailsPage() {
           </section>
         )}
 
-      {canUpdate && transitions.length > 0 && (
+      {canManageAssigned && transitions.length > 0 && (
         <section className="form-panel" aria-labelledby="status-heading">
           <h2 id="status-heading">Update status</h2>
           <form className="form-grid" onSubmit={changeStatus}>
@@ -391,7 +496,7 @@ export function TicketDetailsPage() {
                 <option value="">Select status</option>
                 {transitions.map((value) => (
                   <option key={value} value={value}>
-                    {value.replace('_', ' ')}
+                    {statusLabel(value)}
                   </option>
                 ))}
               </select>
@@ -423,6 +528,59 @@ export function TicketDetailsPage() {
           </form>
         </section>
       )}
+
+      {canUpdateAssigned && !canUpdate && (
+        <section className="form-panel" aria-labelledby="ticket-type-heading">
+          <h2 id="ticket-type-heading">Ticket type</h2>
+          <form
+            className="filter-form"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void updateType()
+            }}
+          >
+            <label>
+              Type
+              <select
+                value={editType}
+                onChange={(event) =>
+                  setEditType(event.target.value as Ticket['type'])
+                }
+              >
+                {TICKET_TYPES.map((value) => (
+                  <option key={value} value={value}>
+                    {value === 'SERVICE_REQUEST'
+                      ? 'Service request'
+                      : 'Incident'}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button disabled={saving || editType === ticket.type} type="submit">
+              Save type
+            </button>
+          </form>
+        </section>
+      )}
+
+      {canSelfAssign &&
+        !ticket.assignee &&
+        ticket.status !== 'CLOSED' &&
+        ticket.status !== 'CANCELLED' && (
+          <section
+            className="form-panel"
+            aria-labelledby="self-assignment-heading"
+          >
+            <h2 id="self-assignment-heading">Assignment</h2>
+            <button
+              disabled={saving}
+              onClick={() => void assignToMe()}
+              type="button"
+            >
+              Assign to me
+            </button>
+          </section>
+        )}
 
       {canAssign &&
         ticket.status !== 'CLOSED' &&
@@ -465,7 +623,7 @@ export function TicketDetailsPage() {
             </form>
             {assignees.length === 0 && (
               <p className="form-help">
-                No active user currently has ticket-update permission.
+                No active IT support user is available for assignment.
               </p>
             )}
           </section>
@@ -479,12 +637,10 @@ export function TicketDetailsPage() {
           <ol className="timeline">
             {comments.map((comment) => (
               <li key={comment.id}>
-                <strong>
-                  {comment.author.fullName}
-                  {comment.isInternal ? ' — Internal note' : ''}
-                </strong>
+                <strong>{comment.author.fullName}</strong>
+                {comment.isInternal && <small>Internal note</small>}
                 <span>{comment.body}</span>
-                <small>{new Date(comment.createdAt).toLocaleString()}</small>
+                <small>{formatDateTime(comment.createdAt)}</small>
               </li>
             ))}
           </ol>
@@ -503,7 +659,7 @@ export function TicketDetailsPage() {
                   onChange={(event) => setCommentBody(event.target.value)}
                 />
               </label>
-              {canUpdate && (
+              {canManageAssigned && (
                 <label className="checkbox-field">
                   <input
                     type="checkbox"
@@ -525,7 +681,9 @@ export function TicketDetailsPage() {
       <section className="detail-panel" aria-labelledby="history-heading">
         <h2 id="history-heading">History</h2>
         {!history ||
-        (history.statuses.length === 0 && history.assignments.length === 0) ? (
+        (history.statuses.length === 0 &&
+          history.assignments.length === 0 &&
+          history.types.length === 0) ? (
           <p className="empty-state">No history available.</p>
         ) : (
           <ol className="timeline">
@@ -533,14 +691,12 @@ export function TicketDetailsPage() {
               <li key={`status-${index}`}>
                 <strong>
                   {item.previousStatus
-                    ? `${item.previousStatus.replace('_', ' ')} → ${item.newStatus.replace('_', ' ')}`
-                    : `Created as ${item.newStatus}`}
+                    ? `Status changed from ${statusLabel(item.previousStatus)} to ${statusLabel(item.newStatus)}.`
+                    : `Ticket created with status ${statusLabel(item.newStatus)}.`}
                 </strong>
-                <span>
-                  {item.changedByName ?? 'Former user'}
-                  {item.reason ? ` — ${item.reason}` : ''}
-                </span>
-                <small>{new Date(item.changedAt).toLocaleString()}</small>
+                <span>{item.changedByName ?? 'Former user'}</span>
+                {item.reason && <small>Reason: {item.reason}</small>}
+                <small>{formatDateTime(item.changedAt)}</small>
               </li>
             ))}
             {history.assignments.map((item, index) => (
@@ -550,11 +706,26 @@ export function TicketDetailsPage() {
                     ? `Unassigned ${item.assigneeName}`
                     : `Assigned to ${item.assigneeName}`}
                 </strong>
-                <span>
-                  {item.assignedByName ?? 'Former user'}
-                  {item.reason ? ` — ${item.reason}` : ''}
-                </span>
-                <small>{new Date(item.assignedAt).toLocaleString()}</small>
+                <span>{item.assignedByName ?? 'Former user'}</span>
+                {item.reason && <small>Reason: {item.reason}</small>}
+                <small>{formatDateTime(item.assignedAt)}</small>
+              </li>
+            ))}
+            {history.types.map((item, index) => (
+              <li key={`type-${index}`}>
+                <strong>
+                  Type changed from{' '}
+                  {item.previousType === 'SERVICE_REQUEST'
+                    ? 'service request'
+                    : 'incident'}{' '}
+                  to{' '}
+                  {item.newType === 'SERVICE_REQUEST'
+                    ? 'service request'
+                    : 'incident'}
+                  .
+                </strong>
+                <span>{item.changedByName ?? 'Former user'}</span>
+                <small>{formatDateTime(item.changedAt)}</small>
               </li>
             ))}
           </ol>

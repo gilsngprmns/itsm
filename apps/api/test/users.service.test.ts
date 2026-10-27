@@ -43,6 +43,24 @@ const storedUser = {
 }
 
 describe('UsersService', () => {
+  it('returns only display fields from the read-only directory', async () => {
+    const { service, dataSource } = createService()
+    dataSource.query
+      .mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([{ id: 'active-user', full_name: 'Active User' }])
+
+    const result = await service.directory({
+      page: 1,
+      limit: 25,
+      search: 'Active',
+    })
+
+    expect(result.items).toEqual([
+      { id: 'active-user', fullName: 'Active User' },
+    ])
+    expect(dataSource.query.mock.calls[1][0]).not.toMatch(/email|role|phone/i)
+  })
+
   it('creates the user with a password hash and never returns the password or hash', async () => {
     const { service, manager, dataSource } = createService()
     manager.query

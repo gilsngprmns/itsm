@@ -42,6 +42,12 @@ export class UsersController {
     )
   }
 
+  @Get('directory')
+  @RequirePermissions('users.directory.read')
+  directory(@Query() query: ListUsersDto) {
+    return this.users.directory(query)
+  }
+
   @Get(':id')
   @RequirePermissions('users.read')
   get(

@@ -12,6 +12,10 @@ describe('API client', () => {
     )
   })
 
+  it('uses the same-origin API path by default in development', () => {
+    expect(buildApiUrl('/health')).toBe('/api/v1/health')
+  })
+
   it('reports failed HTTP responses without exposing response bodies', async () => {
     vi.stubGlobal(
       'fetch',

@@ -88,45 +88,60 @@ export class ReportsService {
   }
 
   private async ticketSummary(period: Period) {
-    const [totalRows, statuses, priorities, categories] = await Promise.all([
-      this.dataSource.query(
-        `SELECT count(*)::int AS total
+    const [totalRows, statuses, priorities, categories, types] =
+      await Promise.all([
+        this.dataSource.query(
+          `SELECT count(*)::int AS total
          FROM public.tickets
-         WHERE deleted_at IS NULL AND created_at >= $1::date
-           AND created_at < $2::date`,
-        [period.startDate, period.endExclusive],
-      ) as Promise<Array<{ total: number }>>,
-      this.countsBy(
-        `SELECT status::text AS name, count(*)::int AS count
+         WHERE deleted_at IS NULL
+           AND created_at >= ($1::date::timestamp AT TIME ZONE 'UTC')
+           AND created_at < ($2::date::timestamp AT TIME ZONE 'UTC')`,
+          [period.startDate, period.endExclusive],
+        ) as Promise<Array<{ total: number }>>,
+        this.countsBy(
+          `SELECT status::text AS name, count(*)::int AS count
          FROM public.tickets
-         WHERE deleted_at IS NULL AND created_at >= $1::date
-           AND created_at < $2::date
-         GROUP BY status ORDER BY status`,
-        [period.startDate, period.endExclusive],
-      ),
-      this.countsBy(
-        `SELECT priority::text AS name, count(*)::int AS count
+          WHERE deleted_at IS NULL
+            AND created_at >= ($1::date::timestamp AT TIME ZONE 'UTC')
+            AND created_at < ($2::date::timestamp AT TIME ZONE 'UTC')
+          GROUP BY status ORDER BY status`,
+          [period.startDate, period.endExclusive],
+        ),
+        this.countsBy(
+          `SELECT priority::text AS name, count(*)::int AS count
          FROM public.tickets
-         WHERE deleted_at IS NULL AND created_at >= $1::date
-           AND created_at < $2::date
-         GROUP BY priority ORDER BY priority`,
-        [period.startDate, period.endExclusive],
-      ),
-      this.countsBy(
-        `SELECT COALESCE(c.name, 'Uncategorized') AS name, count(t.id)::int AS count
+          WHERE deleted_at IS NULL
+            AND created_at >= ($1::date::timestamp AT TIME ZONE 'UTC')
+            AND created_at < ($2::date::timestamp AT TIME ZONE 'UTC')
+          GROUP BY priority ORDER BY priority`,
+          [period.startDate, period.endExclusive],
+        ),
+        this.countsBy(
+          `SELECT COALESCE(c.name, 'Uncategorized') AS name, count(t.id)::int AS count
          FROM public.tickets t
          LEFT JOIN public.ticket_categories c ON c.id = t.category_id
-         WHERE t.deleted_at IS NULL AND t.created_at >= $1::date
-           AND t.created_at < $2::date
+         WHERE t.deleted_at IS NULL
+           AND t.created_at >= ($1::date::timestamp AT TIME ZONE 'UTC')
+           AND t.created_at < ($2::date::timestamp AT TIME ZONE 'UTC')
          GROUP BY c.id, c.name ORDER BY name`,
-        [period.startDate, period.endExclusive],
-      ),
-    ])
+          [period.startDate, period.endExclusive],
+        ),
+        this.countsBy(
+          `SELECT type::text AS name, count(*)::int AS count
+         FROM public.tickets
+          WHERE deleted_at IS NULL
+            AND created_at >= ($1::date::timestamp AT TIME ZONE 'UTC')
+            AND created_at < ($2::date::timestamp AT TIME ZONE 'UTC')
+          GROUP BY type ORDER BY type`,
+          [period.startDate, period.endExclusive],
+        ),
+      ])
     return {
       totalCreated: Number(totalRows[0]?.total ?? 0),
       byStatus: statuses,
       byPriority: priorities,
       byCategory: categories,
+      byType: types,
     }
   }
 
@@ -135,8 +150,9 @@ export class ReportsService {
       `SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date,
               count(*)::int AS count
        FROM public.tickets
-       WHERE deleted_at IS NULL AND created_at >= $1::date
-         AND created_at < $2::date
+       WHERE deleted_at IS NULL
+         AND created_at >= ($1::date::timestamp AT TIME ZONE 'UTC')
+         AND created_at < ($2::date::timestamp AT TIME ZONE 'UTC')
        GROUP BY date ORDER BY date`,
       [period.startDate, period.endExclusive],
     )) as Array<{ date: string; count: number }>
@@ -147,8 +163,9 @@ export class ReportsService {
     const rows = (await this.dataSource.query(
       `SELECT count(*)::int AS total
        FROM public.tickets
-       WHERE deleted_at IS NULL AND resolved_at >= $1::date
-         AND resolved_at < $2::date`,
+       WHERE deleted_at IS NULL
+         AND resolved_at >= ($1::date::timestamp AT TIME ZONE 'UTC')
+         AND resolved_at < ($2::date::timestamp AT TIME ZONE 'UTC')`,
       [period.startDate, period.endExclusive],
     )) as Array<{ total: number }>
     return Number(rows[0]?.total ?? 0)
@@ -197,24 +214,39 @@ export class ReportsService {
 }
 
 function getPeriod(query: ReportsQueryDto): Period {
-  const today = new Date().toISOString().slice(0, 10)
-  const endDate = query.endDate?.slice(0, 10) ?? today
-  const defaultStartDate = new Date(
-    Date.parse(`${endDate}T00:00:00Z`) - 29 * 24 * 60 * 60 * 1000,
-  )
-    .toISOString()
-    .slice(0, 10)
-  const startDate = query.startDate?.slice(0, 10) ?? defaultStartDate
-  const start = Date.parse(`${startDate}T00:00:00Z`)
-  const end = Date.parse(`${endDate}T00:00:00Z`)
+  const today = formatUtcDate(new Date())
+  const endDate = query.endDate ?? today
+  const end = parseDateOnly(endDate, 'endDate')
+  const startDate =
+    query.startDate ?? formatUtcDate(new Date(end - 29 * 24 * 60 * 60 * 1000))
+  const start = parseDateOnly(startDate, 'startDate')
   if (start > end) {
     throw new BadRequestException('startDate must be on or before endDate')
   }
   if (end - start > 366 * 24 * 60 * 60 * 1000) {
     throw new BadRequestException('Date range cannot exceed 367 calendar days')
   }
-  const endExclusive = new Date(end + 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 10)
+  const endExclusive = formatUtcDate(new Date(end + 24 * 60 * 60 * 1000))
   return { startDate, endDate, endExclusive }
+}
+
+function parseDateOnly(value: string, field: string): number {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith('0000-')) {
+    throw new BadRequestException(`${field} must be a valid YYYY-MM-DD date`)
+  }
+  const timestamp = Date.parse(`${value}T00:00:00.000Z`)
+  if (
+    !Number.isFinite(timestamp) ||
+    new Date(timestamp).toISOString().slice(0, 10) !== value
+  ) {
+    throw new BadRequestException(`${field} must be a valid YYYY-MM-DD date`)
+  }
+  return timestamp
+}
+
+function formatUtcDate(date: Date): string {
+  const year = String(date.getUTCFullYear()).padStart(4, '0')
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(date.getUTCDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }

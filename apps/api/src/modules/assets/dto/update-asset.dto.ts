@@ -1,5 +1,6 @@
 import {
   IsDateString,
+  IsBoolean,
   IsNumber,
   IsOptional,
   IsString,
@@ -11,6 +12,10 @@ import {
 } from 'class-validator'
 
 export class UpdateAssetDto {
+  @IsOptional()
+  @IsBoolean()
+  isShared?: boolean
+
   @IsOptional()
   @IsString()
   @MinLength(1)

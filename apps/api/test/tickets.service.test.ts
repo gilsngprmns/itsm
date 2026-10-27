@@ -41,6 +41,7 @@ const ticketRow = {
   location_name: null,
   priority: 'MEDIUM' as const,
   status: 'OPEN' as const,
+  type: 'INCIDENT' as const,
   resolution_summary: null,
   resolved_at: null,
   closed_at: null,
@@ -56,6 +57,7 @@ const request = {
 describe('ticket lifecycle', () => {
   it('allows only documented lifecycle transitions', () => {
     expect(canTransitionTicket('OPEN', 'IN_PROGRESS')).toBe(true)
+    expect(canTransitionTicket('OPEN', 'RESOLVED')).toBe(false)
     expect(canTransitionTicket('RESOLVED', 'IN_PROGRESS')).toBe(true)
     expect(canTransitionTicket('OPEN', 'CLOSED')).toBe(false)
     expect(canTransitionTicket('CLOSED', 'IN_PROGRESS')).toBe(false)
@@ -99,6 +101,7 @@ describe('TicketsService', () => {
       subject: ' Cannot connect ',
       description: ' Network unavailable ',
       categoryId: 'category-id',
+      type: 'INCIDENT',
     }
 
     const result = await service.create(dto, owner, request)
@@ -115,9 +118,36 @@ describe('TicketsService', () => {
       null,
       null,
       'MEDIUM',
+      'INCIDENT',
     ])
     expect(query.mock.calls[2][0]).toContain('ticket_status_history')
     expect(query.mock.calls[3][0]).toContain('audit_logs')
+  })
+
+  it('paginates only assets linkable by an ordinary requester', async () => {
+    rawQuery.mockResolvedValueOnce([{ total: 1 }]).mockResolvedValueOnce([
+      {
+        id: 'asset-id',
+        asset_code: 'AST-1',
+        asset_tag: 'LAP-1',
+        name: 'Laptop',
+      },
+    ])
+
+    const result = await service.linkableAssets(
+      { search: 'Laptop', page: 2, limit: 10 },
+      owner,
+    )
+
+    expect(result).toMatchObject({ page: 2, limit: 10, total: 1 })
+    expect(result.items[0]).toEqual({
+      id: 'asset-id',
+      assetCode: 'AST-1',
+      assetTag: 'LAP-1',
+      name: 'Laptop',
+    })
+    expect(rawQuery.mock.calls[0][0]).toContain('a.is_shared = true')
+    expect(rawQuery.mock.calls[0][0]).toContain('aa.user_id = $2')
   })
 
   it('hides another requester ticket as not found', async () => {
@@ -163,6 +193,42 @@ describe('TicketsService', () => {
     expect(rawQuery).not.toHaveBeenCalled()
   })
 
+  it('prevents IT support from changing unassigned ticket fields', async () => {
+    const support: AuthenticatedUser = {
+      ...owner,
+      permissions: [
+        'tickets.read.all',
+        'tickets.update.assigned',
+        'tickets.self_assign',
+      ],
+    }
+    await expect(
+      service.update(
+        ticketRow.id,
+        { subject: 'Changed by support' },
+        support,
+        request,
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException)
+    expect(query).not.toHaveBeenCalled()
+  })
+
+  it('uses a conditional update for race-safe self-assignment', async () => {
+    query
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: ticketRow.id }])
+    const support: AuthenticatedUser = {
+      ...owner,
+      permissions: ['tickets.read.all', 'tickets.self_assign'],
+    }
+
+    await expect(
+      service.selfAssign(ticketRow.id, support, request),
+    ).rejects.toBeInstanceOf(ConflictException)
+    expect(query.mock.calls[0][0]).toContain('assigned_to IS NULL')
+    expect(query.mock.calls[0][0]).toContain('status NOT IN')
+  })
+
   it('requires a resolution summary before marking a ticket resolved', async () => {
     query.mockResolvedValueOnce([
       { ...ticketRow, status: 'IN_PROGRESS' as const },
@@ -181,6 +247,38 @@ describe('TicketsService', () => {
       ),
     ).rejects.toBeInstanceOf(BadRequestException)
     expect(query).toHaveBeenCalledTimes(1)
+  })
+
+  it('updates ticket status with consistently typed SQL parameters', async () => {
+    const updatedTicket = { ...ticketRow, status: 'PENDING' as const }
+    query
+      .mockResolvedValueOnce([{ ...ticketRow, status: 'IN_PROGRESS' as const }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([updatedTicket])
+
+    const result = await service.setStatus(
+      ticketRow.id,
+      { status: 'PENDING' },
+      {
+        ...owner,
+        roles: ['ADMIN'],
+        permissions: ['tickets.read.all', 'tickets.update'],
+      },
+      request,
+    )
+
+    expect(result.status).toBe('PENDING')
+    expect(query.mock.calls[1][0]).toContain('SET status = $2::text')
+    expect(query.mock.calls[1][0]).toContain("$2::text = 'RESOLVED'")
+    expect(query.mock.calls[1][0]).toContain("$1::text = 'RESOLVED'")
+    expect(query.mock.calls[1][1]).toEqual([
+      'IN_PROGRESS',
+      'PENDING',
+      null,
+      ticketRow.id,
+    ])
   })
 
   it('rejects an invalid status transition without writing history', async () => {

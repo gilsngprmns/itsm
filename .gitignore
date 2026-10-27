@@ -7,6 +7,13 @@ coverage/
 .env
 .env.*
 !.env.example
+/backup/
+/apps/api/integration-tests/database.integration.d.ts
+/apps/api/integration-tests/database.integration.js
+/apps/api/integration-tests/database.integration.js.map
+/apps/api/vitest.integration.config.d.mts
+/apps/api/vitest.integration.config.mjs
+/apps/api/vitest.integration.config.mjs.map
 
 *.log
 .DS_Store

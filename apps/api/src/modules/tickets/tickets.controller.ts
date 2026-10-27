@@ -25,6 +25,7 @@ import { AssignTicketDto } from './dto/assign-ticket.dto'
 import { CreateCommentDto } from './dto/create-comment.dto'
 import { CreateTicketDto } from './dto/create-ticket.dto'
 import { ListTicketsDto } from './dto/list-tickets.dto'
+import { LinkableAssetsDto } from './dto/linkable-assets.dto'
 import {
   CreateTicketCategoryDto,
   TicketCategoryStatusDto,
@@ -43,6 +44,15 @@ export class TicketsController {
   @RequireAnyPermissions('tickets.read.all', 'tickets.read.own')
   list(@Query() query: ListTicketsDto, @CurrentUser() user: AuthenticatedUser) {
     return this.tickets.list(query, user)
+  }
+
+  @Get('linkable-assets')
+  @RequirePermissions('tickets.create')
+  linkableAssets(
+    @Query() query: LinkableAssetsDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.tickets.linkableAssets(query, user)
   }
 
   @Post()
@@ -73,7 +83,7 @@ export class TicketsController {
 
   @Post(':id/comments')
   @UseGuards(OriginGuard)
-  @RequirePermissions('tickets.comment')
+  @RequireAnyPermissions('tickets.comment', 'tickets.update.assigned')
   @HttpCode(204)
   addComment(
     @Param('id', ParseUUIDPipe) id: string,
@@ -95,7 +105,7 @@ export class TicketsController {
 
   @Patch(':id/status')
   @UseGuards(OriginGuard)
-  @RequirePermissions('tickets.update')
+  @RequireAnyPermissions('tickets.update', 'tickets.update.assigned')
   setStatus(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: TicketStatusDto,
@@ -117,9 +127,20 @@ export class TicketsController {
     return this.tickets.assign(id, body, user, request)
   }
 
+  @Post(':id/assign-to-me')
+  @UseGuards(OriginGuard)
+  @RequirePermissions('tickets.self_assign')
+  selfAssign(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Req() request: Request,
+  ) {
+    return this.tickets.selfAssign(id, user, request)
+  }
+
   @Patch(':id')
   @UseGuards(OriginGuard)
-  @RequirePermissions('tickets.update')
+  @RequireAnyPermissions('tickets.update', 'tickets.update.assigned')
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: UpdateTicketDto,

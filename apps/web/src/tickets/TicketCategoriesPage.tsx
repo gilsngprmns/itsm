@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useAuth } from '../auth/AuthContext'
+import { PageHeader } from '../common/PageHeader'
+import { StatusBadge } from '../common/StatusBadge'
 import { apiRequest } from '../lib/api'
 import { ticketErrorMessage } from './ticket-errors'
 import type { TicketCategory } from './ticket-types'
@@ -122,15 +124,7 @@ export function TicketCategoriesPage() {
 
   return (
     <main className="page management-page">
-      <header className="page-header">
-        <div>
-          <p className="eyebrow">Service desk</p>
-          <h1>Ticket categories</h1>
-          <p className="intro">
-            Manage categories used when users submit tickets.
-          </p>
-        </div>
-      </header>
+      <PageHeader title="Ticket categories" />
       {notice && (
         <p className="notice" role="status">
           {notice}
@@ -191,13 +185,13 @@ export function TicketCategoriesPage() {
             <section className="form-panel category-row" key={category.id}>
               <div className="category-heading">
                 <h2>{category.name}</h2>
-                <span className="status-pill">
-                  {category.isActive ? 'Active' : 'Inactive'}
-                </span>
+                <StatusBadge
+                  value={category.isActive ? 'ACTIVE' : 'INACTIVE'}
+                />
               </div>
               <p>
                 <strong>{category.code}</strong>
-                {category.description ? ` — ${category.description}` : ''}
+                {category.description && <span>{category.description}</span>}
               </p>
               {canManage && (
                 <form

@@ -8,6 +8,7 @@ export interface TicketReport {
   byStatus: ReportCount[]
   byPriority: ReportCount[]
   byCategory: ReportCount[]
+  byType: ReportCount[]
   resolvedInPeriod: number
   trend: Array<{ date: string; count: number }>
 }

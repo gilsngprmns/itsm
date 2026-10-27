@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
+import { ErrorBanner } from '../common/Feedback'
+import { PageHeader } from '../common/PageHeader'
 import { ApiRequestError, apiRequest } from '../lib/api'
+import { onTicketChanged } from '../tickets/ticket-events'
 import { CountList, DateFilter, Metric, PanelHeading } from './DashboardPage'
 import type { TicketReport, AssetReport } from './report-types'
 import { dateRangeDefaults, dateLabel } from './report-utils'
@@ -44,17 +47,18 @@ export function ReportsPage() {
     }
   }, [load])
 
+  useEffect(
+    () =>
+      onTicketChanged(() => {
+        setLoading(true)
+        void load()
+      }),
+    [load],
+  )
+
   return (
     <main className="page management-page dashboard-page">
-      <header className="page-header dashboard-heading">
-        <div>
-          <p className="eyebrow">Operations</p>
-          <h1>Reports</h1>
-          <p className="intro">
-            Live ticket and asset summaries from the service database.
-          </p>
-        </div>
-      </header>
+      <PageHeader title="Reports" />
       <DateFilter
         endDate={endDate}
         onEndDateChange={(value) => {
@@ -68,18 +72,18 @@ export function ReportsPage() {
         startDate={startDate}
       />
       {error && (
-        <div className="error-banner dashboard-error" role="alert">
+        <ErrorBanner className="dashboard-error">
           <span>{error}</span>
           <button onClick={() => void load()} type="button">
-            Retry
+            Try again
           </button>
-        </div>
+        </ErrorBanner>
       )}
       {loading && <p role="status">Loading reports…</p>}
       {!loading && report && (
         <>
           <p className="report-period">
-            Reporting period: {dateLabel(report.period.startDate)} –{' '}
+            From {dateLabel(report.period.startDate)} to{' '}
             {dateLabel(report.period.endDate)}
           </p>
           <section className="metric-grid" aria-label="Report totals">
@@ -100,6 +104,13 @@ export function ReportsPage() {
             >
               <PanelHeading id="report-ticket-status" title="Ticket status" />
               <CountList items={report.tickets.byStatus} />
+            </section>
+            <section
+              className="report-panel"
+              aria-labelledby="report-ticket-type"
+            >
+              <PanelHeading id="report-ticket-type" title="Ticket type" />
+              <CountList items={report.tickets.byType} />
             </section>
             <section
               className="report-panel"

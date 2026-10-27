@@ -88,20 +88,21 @@ no database migration.
 
 ## Development commands
 
-| Command                                  | Purpose                                                |
-| ---------------------------------------- | ------------------------------------------------------ |
-| `pnpm.cmd dev`                           | Start frontend and API in parallel                     |
-| `pnpm.cmd dev:web`                       | Start only the Vite frontend                           |
-| `pnpm.cmd dev:api`                       | Start only the NestJS API                              |
-| `pnpm.cmd build`                         | Build all workspace applications                       |
-| `pnpm.cmd lint`                          | Run ESLint in each application                         |
-| `pnpm.cmd format:check`                  | Check formatting without modifying files               |
-| `pnpm.cmd typecheck`                     | Run strict TypeScript checks                           |
-| `pnpm.cmd test`                          | Run workspace unit tests (no live DB writes)           |
-| `pnpm.cmd --filter api test:integration` | Run the opt-in, read-only PostgreSQL schema smoke test |
-| `pnpm.cmd audit`                         | Audit production dependencies                          |
-| `pnpm.cmd db:migration:show`             | Read migration history                                 |
-| `pnpm.cmd db:migration:run`              | Run reviewed TypeORM migrations (build API first)      |
+| Command                                  | Purpose                                                          |
+| ---------------------------------------- | ---------------------------------------------------------------- |
+| `pnpm.cmd dev`                           | Start frontend and API in parallel                               |
+| `pnpm.cmd dev:web`                       | Start only the Vite frontend                                     |
+| `pnpm.cmd dev:api`                       | Start only the NestJS API                                        |
+| `pnpm.cmd build`                         | Build all workspace applications                                 |
+| `pnpm.cmd lint`                          | Run ESLint in each application                                   |
+| `pnpm.cmd format:check`                  | Check formatting without modifying files                         |
+| `pnpm.cmd typecheck`                     | Run strict TypeScript checks                                     |
+| `pnpm.cmd test`                          | Run workspace unit tests (no live DB writes)                     |
+| `pnpm.cmd --filter api test:integration` | Run the opt-in, read-only PostgreSQL schema smoke test           |
+| `pnpm.cmd audit`                         | Audit production dependencies                                    |
+| `pnpm.cmd db:migration:show`             | Show discovered migrations and verify source consistency         |
+| `pnpm.cmd db:migration:run`              | Run reviewed TypeORM migrations (build API first)                |
+| `pnpm.cmd db:migration:revert`           | Revert the latest migration only when its down operation is safe |
 
 To use Docker instead of an installed PostgreSQL, run
 `docker compose up -d postgres`. Its data persists in the `postgres-data`

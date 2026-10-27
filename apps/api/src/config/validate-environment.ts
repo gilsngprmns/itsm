@@ -5,6 +5,7 @@ export interface ValidatedEnvironment extends Environment {
   PORT: number
   DATABASE_URL: string
   CORS_ORIGINS: string
+  PUBLIC_WEB_URL?: string
   SESSION_COOKIE_NAME: string
   AUTH_SESSION_TTL_MINUTES: number
 }
@@ -12,7 +13,7 @@ export interface ValidatedEnvironment extends Environment {
 export function validateEnvironment(
   environment: Environment,
 ): ValidatedEnvironment {
-  const nodeEnv = readString(environment, 'NODE_ENV', 'development')
+  const nodeEnv = readString(environment, 'NODE_ENV')
   if (!['development', 'test', 'production'].includes(nodeEnv)) {
     throw new Error('NODE_ENV must be development, test, or production')
   }
@@ -92,15 +93,38 @@ export function validateEnvironment(
     throw new Error('CORS_ORIGINS must use HTTPS in production')
   }
 
+  const publicWebUrl = readOptionalString(environment, 'PUBLIC_WEB_URL')
+  if (publicWebUrl && !isAllowedOrigin(publicWebUrl)) {
+    throw new Error('PUBLIC_WEB_URL must be an explicit HTTP or HTTPS origin')
+  }
+  if (
+    publicWebUrl &&
+    nodeEnv === 'production' &&
+    !publicWebUrl.startsWith('https://')
+  ) {
+    throw new Error('PUBLIC_WEB_URL must use HTTPS in production')
+  }
+
   return {
     ...environment,
     NODE_ENV: nodeEnv,
     PORT: port,
     DATABASE_URL: databaseUrl,
     CORS_ORIGINS: origins.join(','),
+    ...(publicWebUrl ? { PUBLIC_WEB_URL: publicWebUrl } : {}),
     SESSION_COOKIE_NAME: sessionCookieName,
     AUTH_SESSION_TTL_MINUTES: sessionTtl,
   }
+}
+
+function readOptionalString(
+  environment: Environment,
+  key: string,
+): string | undefined {
+  const value = environment[key]
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim().replace(/\/$/, '')
+    : undefined
 }
 
 function readString(

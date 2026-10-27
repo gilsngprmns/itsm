@@ -11,6 +11,22 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.4
+        env:
+          POSTGRES_USER: itsm_ci
+          POSTGRES_PASSWORD: itsm_ci_test_only
+          POSTGRES_DB: itsm_ci_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U itsm_ci -d itsm_ci_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://itsm_ci:itsm_ci_test_only@127.0.0.1:5432/itsm_ci_test
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -22,8 +38,13 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm typecheck
       - run: pnpm test
+      - run: pnpm --filter api rebuild argon2
+      - name: Verify Argon2 hashing
+        run: pnpm --filter api exec node --input-type=module -e "import argon2 from 'argon2'; const hash = await argon2.hash('ci-validation-only'); if (!(await argon2.verify(hash, 'ci-validation-only'))) process.exit(1)"
+      - run: pnpm --filter api test:integration
       - run: pnpm build
