@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useAuth } from '../auth/AuthContext'
+import { EmptyState } from '../common/Feedback'
+import { formatDate, formatDateTimeFull } from '../common/format'
+import { PageHeader } from '../common/PageHeader'
+import { StatusBadge } from '../common/StatusBadge'
 import { ApiRequestError, apiRequest } from '../lib/api'
 
 interface UserRecord {
@@ -213,25 +217,23 @@ export function UsersPage() {
 
   return (
     <main className="page management-page">
-      <header className="page-header">
-        <div>
-          <p className="eyebrow">Administration</p>
-          <h1>Users</h1>
-          <p className="intro">Manage accounts and access to the system.</p>
-        </div>
-        {canCreate && (
-          <button
-            type="button"
-            onClick={() => {
-              setShowCreate((current) => !current)
-              setEditing(null)
-              setError(null)
-            }}
-          >
-            {showCreate ? 'Cancel' : 'Create user'}
-          </button>
-        )}
-      </header>
+      <PageHeader
+        title="Users"
+        actions={
+          canCreate ? (
+            <button
+              type="button"
+              onClick={() => {
+                setShowCreate((current) => !current)
+                setEditing(null)
+                setError(null)
+              }}
+            >
+              {showCreate ? 'Cancel' : 'Create user'}
+            </button>
+          ) : undefined
+        }
+      />
 
       {notice && (
         <p className="notice" role="status">
@@ -323,7 +325,7 @@ export function UsersPage() {
             </label>
           </div>
           <button disabled={saving} type="submit">
-            {saving ? 'Creating…' : 'Create account'}
+            {saving ? 'Creating user…' : 'Create user'}
           </button>
         </form>
       )}
@@ -400,7 +402,20 @@ export function UsersPage() {
       {loading ? (
         <p role="status">Loading users…</p>
       ) : items.length === 0 ? (
-        <p className="empty-state">No users found.</p>
+        <EmptyState
+          message="No users found."
+          action={
+            canCreate ? (
+              <button
+                className="text-button"
+                onClick={() => setShowCreate(true)}
+                type="button"
+              >
+                Create user
+              </button>
+            ) : undefined
+          }
+        />
       ) : (
         <>
           <div className="table-scroll">
@@ -420,8 +435,8 @@ export function UsersPage() {
                 {items.map((record) => (
                   <tr key={record.id}>
                     <td>{record.fullName}</td>
-                    <td>{record.email ?? '—'}</td>
-                    <td>{record.employeeCode ?? '—'}</td>
+                    <td>{record.email ?? 'Not provided'}</td>
+                    <td>{record.employeeCode ?? 'Not provided'}</td>
                     <td>
                       {canChangeRole && record.id !== user?.id ? (
                         <select
@@ -434,18 +449,31 @@ export function UsersPage() {
                           <option value="" disabled>
                             No role
                           </option>
-                          {['ADMIN', 'USER', 'AUDIT'].map((roleCode) => (
-                            <option key={roleCode} value={roleCode}>
-                              {roleCode}
-                            </option>
-                          ))}
+                          {['ADMIN', 'USER', 'AUDIT', 'IT_SUPPORT'].map(
+                            (roleCode) => (
+                              <option key={roleCode} value={roleCode}>
+                                {roleCode}
+                              </option>
+                            ),
+                          )}
                         </select>
                       ) : (
-                        record.roles.join(', ') || '—'
+                        record.roles.join(', ') || 'No role'
                       )}
                     </td>
-                    <td>{record.isActive ? 'Active' : 'Inactive'}</td>
-                    <td>{new Date(record.createdAt).toLocaleDateString()}</td>
+                    <td>
+                      <StatusBadge
+                        value={record.isActive ? 'ACTIVE' : 'INACTIVE'}
+                      />
+                    </td>
+                    <td>
+                      <time
+                        dateTime={record.createdAt}
+                        title={formatDateTimeFull(record.createdAt)}
+                      >
+                        {formatDate(record.createdAt)}
+                      </time>
+                    </td>
                     <td className="action-cell">
                       {canUpdate && (
                         <button
@@ -482,10 +510,11 @@ export function UsersPage() {
                 setPage((current) => current - 1)
               }}
             >
-              Previous
+              Previous page
             </button>
             <span>
-              Page {page} of {pageCount} · {total} users
+              Showing {(page - 1) * 25 + 1} to {Math.min(page * 25, total)} of{' '}
+              {total} users
             </span>
             <button
               disabled={page >= pageCount}
@@ -495,7 +524,7 @@ export function UsersPage() {
                 setPage((current) => current + 1)
               }}
             >
-              Next
+              Next page
             </button>
           </nav>
         </>

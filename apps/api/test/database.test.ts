@@ -59,6 +59,36 @@ describe('DatabaseService', () => {
     expect(options.synchronize).toBe(false)
     expect(options.migrationsRun).toBe(false)
     expect(options.migrationsTableName).toBe('typeorm_migrations')
+    expect(options.extra).toMatchObject({ statement_timeout: 3000 })
+  })
+
+  it('supports a bounded migration-specific statement timeout', () => {
+    const options = createDatabaseOptions(
+      'postgresql://test-user:test-password@127.0.0.1:5432/it_db',
+      30_000,
+    )
+
+    expect(options.extra).toMatchObject({ statement_timeout: 30_000 })
+  })
+
+  it('uses explicit full TLS verification for ambiguous PostgreSQL ssl modes', () => {
+    const options = createDatabaseOptions(
+      'postgresql://test-user:test-password@db.example.test/itsm?sslmode=require&channel_binding=require',
+    )
+
+    const normalizedUrl = new URL('url' in options ? (options.url ?? '') : '')
+    expect(normalizedUrl.searchParams.get('sslmode')).toBe('verify-full')
+    expect(normalizedUrl.searchParams.get('channel_binding')).toBe('require')
+    expect(normalizedUrl.username).toBe('test-user')
+    expect(normalizedUrl.password).toBe('test-password')
+  })
+
+  it('rejects PostgreSQL ssl mode that disables certificate verification', () => {
+    expect(() =>
+      createDatabaseOptions(
+        'postgresql://test-user:test-password@db.example.test/itsm?sslmode=no-verify',
+      ),
+    ).toThrow('sslmode=no-verify is not allowed')
   })
 })
 

@@ -4,6 +4,11 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.12.1",
+  "pnpm": {
+    "overrides": {
+      "@nestjs/platform-express>multer": "2.5.0"
+    }
+  },
   "engines": {
     "node": ">=22.12.0"
   },
@@ -19,7 +24,8 @@
     "test": "pnpm --recursive --if-present run test",
     "audit": "pnpm audit --prod",
     "db:migration:show": "pnpm --filter api migration:show",
-    "db:migration:run": "pnpm --filter api migration:run"
+    "db:migration:run": "pnpm --filter api migration:run",
+    "db:migration:revert": "pnpm --filter api migration:revert"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

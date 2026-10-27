@@ -49,6 +49,39 @@ const PASSWORD_OPTIONS: argon2.Options & { type: number } = {
 export class UsersService {
   constructor(private readonly dataSource: DataSource) {}
 
+  async directory(query: ListUsersDto): Promise<{
+    items: Array<{ id: string; fullName: string }>
+    page: number
+    limit: number
+    total: number
+  }> {
+    const page = query.page || 1
+    const limit = query.limit || 25
+    const search = query.search?.trim()
+    const parameters: unknown[] = []
+    const filter = search
+      ? `AND full_name ILIKE $${parameters.push(`%${search}%`)}`
+      : ''
+    const count = (await this.dataSource.query(
+      `SELECT count(*)::int AS total FROM public.users
+       WHERE is_active = true AND deleted_at IS NULL ${filter}`,
+      parameters,
+    )) as Array<{ total: number }>
+    const rows = (await this.dataSource.query(
+      `SELECT id, full_name FROM public.users
+       WHERE is_active = true AND deleted_at IS NULL ${filter}
+       ORDER BY full_name, id LIMIT $${parameters.length + 1}
+       OFFSET $${parameters.length + 2}`,
+      [...parameters, limit, (page - 1) * limit],
+    )) as Array<{ id: string; full_name: string }>
+    return {
+      items: rows.map((row) => ({ id: row.id, fullName: row.full_name })),
+      page,
+      limit,
+      total: Number(count[0]?.total ?? 0),
+    }
+  }
+
   async list(
     query: ListUsersDto,
     includePersonalData: boolean,

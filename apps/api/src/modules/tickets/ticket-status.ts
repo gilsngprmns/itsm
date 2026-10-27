@@ -11,6 +11,9 @@ export type TicketStatus = (typeof TICKET_STATUSES)[number]
 
 export const TICKET_PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const
 
+export const TICKET_TYPES = ['INCIDENT', 'SERVICE_REQUEST'] as const
+export type TicketType = (typeof TICKET_TYPES)[number]
+
 export type TicketPriority = (typeof TICKET_PRIORITIES)[number]
 
 export const TICKET_STATUS_TRANSITIONS: Record<

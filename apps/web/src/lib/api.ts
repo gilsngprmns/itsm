@@ -1,4 +1,6 @@
-const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+const configuredApiBaseUrl = import.meta.env.DEV
+  ? '/api/v1'
+  : import.meta.env.VITE_API_BASE_URL || '/api/v1'
 
 export function buildApiUrl(
   path: string,
@@ -29,6 +31,7 @@ export async function apiRequest<T>(
   const response = await fetch(buildApiUrl(path), {
     ...init,
     credentials: 'include',
+    cache: 'no-store',
     headers,
   })
   if (!response.ok) {

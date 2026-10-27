@@ -4,11 +4,23 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common'
 import type { Request } from 'express'
+import { ConfigService } from '@nestjs/config'
+import QRCode from 'qrcode'
+import { randomUUID } from 'node:crypto'
+import { basename } from 'node:path'
 import { DataSource, type EntityManager } from 'typeorm'
 import { getPostgresErrorCode, writeAuditLog } from '../../common/audit-log'
 import type { AuthenticatedUser } from '../auth/auth.types'
+import {
+  parseAssetCsv,
+  serializeAssetCsv,
+  validateAssetCsv,
+  type AssetCsvPreview,
+  type ParsedAssetCsv,
+} from './asset-csv'
 import { ASSET_STATUS_TRANSITIONS, type AssetStatus } from './asset-status'
 import type { AssignAssetDto } from './dto/assign-asset.dto'
 import type { AssetStatusDto } from './dto/asset-status.dto'
@@ -18,6 +30,8 @@ import type { UpdateAssetDto } from './dto/update-asset.dto'
 
 interface AssetRow {
   id: string
+  asset_code: string
+  is_shared: boolean
   asset_tag: string
   name: string
   category_id: string
@@ -46,6 +60,7 @@ interface AssetRow {
 
 interface AssetForUpdate {
   id: string
+  is_shared: boolean
   asset_tag: string
   name: string
   category_id: string
@@ -65,6 +80,8 @@ interface AssetForUpdate {
 
 export interface AssetResponse {
   id: string
+  assetCode: string
+  isShared: boolean
   assetTag: string
   name: string
   category: { id: string; code: string; name: string }
@@ -98,7 +115,93 @@ const ASSET_COLUMNS: Record<string, string> = {
 
 @Injectable()
 export class AssetsService {
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly config: ConfigService,
+  ) {}
+
+  async byCode(code: string, user: AuthenticatedUser): Promise<AssetResponse> {
+    const rows = (await this.dataSource.query(
+      `${assetSelect()} WHERE a.asset_code = $1 AND a.deleted_at IS NULL`,
+      [code],
+    )) as AssetRow[]
+    if (!rows[0]) throw new NotFoundException('Asset not found')
+    return this.get(rows[0].id, user)
+  }
+
+  async qr(id: string, user: AuthenticatedUser): Promise<string> {
+    const asset = await this.get(id, user)
+    const baseUrl = (
+      this.config.get<string>('PUBLIC_WEB_URL') ||
+      this.config.get<string>('CORS_ORIGINS')?.split(',')[0] ||
+      ''
+    ).replace(/\/$/, '')
+    if (!baseUrl)
+      throw new BadRequestException('Public web URL is not configured')
+    return QRCode.toString(
+      `${baseUrl}/assets/by-code/${encodeURIComponent(asset.assetCode)}`,
+      {
+        type: 'svg',
+        margin: 1,
+        width: 240,
+      },
+    )
+  }
+
+  async linkedTickets(
+    id: string,
+    query: { page?: number; limit?: number },
+    user: AuthenticatedUser,
+  ) {
+    await this.get(id, user)
+    const canReadAll = user.permissions.includes('tickets.read.all')
+    if (!canReadAll && !user.permissions.includes('tickets.read.own')) {
+      throw new ForbiddenException('Insufficient ticket permissions')
+    }
+    const page = query.page ?? 1
+    const limit = query.limit ?? 10
+    const accessClause = canReadAll ? '' : ' AND t.requester_id = $2'
+    const params: unknown[] = canReadAll ? [id] : [id, user.id]
+    const countRows = (await this.dataSource.query(
+      `SELECT count(*)::int AS total,
+        count(*) FILTER (WHERE t.status NOT IN ('CLOSED', 'CANCELLED', 'RESOLVED'))::int AS open,
+        max(t.created_at) AS last_ticket_at
+       FROM public.tickets t WHERE t.asset_id = $1 AND t.deleted_at IS NULL${accessClause}`,
+      params,
+    )) as Array<{ total: number; open: number; last_ticket_at: Date | null }>
+    const rows = (await this.dataSource.query(
+      `SELECT t.id, t.ticket_number::text AS ticket_number,
+        to_char(t.created_at AT TIME ZONE 'UTC', 'YYYY') AS ticket_year,
+        t.subject, t.type, t.status, t.priority, t.created_at, t.resolved_at,
+        requester.full_name AS requester_name, assignee.full_name AS assignee_name
+       FROM public.tickets t
+       JOIN public.users requester ON requester.id = t.requester_id
+       LEFT JOIN public.users assignee ON assignee.id = t.assigned_to
+       WHERE t.asset_id = $1 AND t.deleted_at IS NULL${accessClause}
+       ORDER BY t.created_at DESC, t.id
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, (page - 1) * limit],
+    )) as Array<Record<string, string | Date | null>>
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        ticketNumber: `TCK-${row.ticket_year}-${String(row.ticket_number).padStart(6, '0')}`,
+        subject: row.subject,
+        type: row.type,
+        status: row.status,
+        priority: row.priority,
+        createdAt: row.created_at,
+        resolvedAt: row.resolved_at,
+        requesterName: row.requester_name,
+        assigneeName: row.assignee_name,
+      })),
+      page,
+      limit,
+      total: Number(countRows[0]?.total ?? 0),
+      open: Number(countRows[0]?.open ?? 0),
+      lastTicketAt: countRows[0]?.last_ticket_at ?? null,
+    }
+  }
 
   async list(
     query: ListAssetsDto,
@@ -123,10 +226,10 @@ export class AssetsService {
     if (!canViewAll) {
       addFilter(
         (parameter) =>
-          `EXISTS (SELECT 1 FROM public.asset_assignments own_assignment
+          `(a.is_shared = true OR EXISTS (SELECT 1 FROM public.asset_assignments own_assignment
                    WHERE own_assignment.asset_id = a.id
                      AND own_assignment.user_id = ${parameter}
-                     AND own_assignment.returned_at IS NULL)`,
+                     AND own_assignment.returned_at IS NULL))`,
         user.id,
       )
     }
@@ -134,7 +237,7 @@ export class AssetsService {
       const search = `%${query.search.trim()}%`
       addFilter(
         (parameter) =>
-          `(a.asset_tag ILIKE ${parameter} OR a.name ILIKE ${parameter} OR a.serial_number ILIKE ${parameter})`,
+          `(a.asset_code ILIKE ${parameter} OR a.asset_tag ILIKE ${parameter} OR a.name ILIKE ${parameter} OR a.serial_number ILIKE ${parameter})`,
         search,
       )
     }
@@ -178,15 +281,172 @@ export class AssetsService {
     }
   }
 
+  csvTemplate(): string {
+    return serializeAssetCsv([])
+  }
+
+  async exportCsv(
+    query: ListAssetsDto,
+    user: AuthenticatedUser,
+  ): Promise<string> {
+    const parameters: unknown[] = []
+    const where = ['a.deleted_at IS NULL']
+    const addFilter = (condition: string, value: unknown) => {
+      parameters.push(value)
+      where.push(condition.replace('?', `$${parameters.length}`))
+    }
+    if (!hasAllAssetRead(user)) {
+      addFilter(
+        `(a.is_shared = true OR EXISTS (
+          SELECT 1 FROM public.asset_assignments own_assignment
+          WHERE own_assignment.asset_id = a.id
+            AND own_assignment.user_id = ?
+            AND own_assignment.returned_at IS NULL))`,
+        user.id,
+      )
+    }
+    if (query.search?.trim()) {
+      parameters.push(`%${query.search.trim()}%`)
+      const index = parameters.length
+      where.push(
+        `(a.asset_code ILIKE $${index} OR a.asset_tag ILIKE $${index}
+          OR a.name ILIKE $${index} OR a.serial_number ILIKE $${index})`,
+      )
+    }
+    if (query.status) addFilter('a.status = ?', query.status)
+    if (query.categoryId) addFilter('a.category_id = ?', query.categoryId)
+    if (query.locationId) addFilter('a.location_id = ?', query.locationId)
+
+    const rows = (await this.dataSource.query(
+      `${assetSelect()}
+       WHERE ${where.join(' AND ')}
+       ORDER BY a.asset_tag, a.id`,
+      parameters,
+    )) as AssetRow[]
+    return serializeAssetCsv(
+      rows.map((row) => ({
+        assetTag: row.asset_tag,
+        name: row.name,
+        categoryCode: row.category_code,
+        manufacturer: row.manufacturer,
+        model: row.model,
+        serialNumber: row.serial_number,
+        description: row.description,
+        locationCode: row.location_code,
+        purchaseDate: row.purchase_date,
+        purchaseCost: row.purchase_cost,
+        warrantyStart: row.warranty_start,
+        warrantyEnd: row.warranty_end,
+        notes: row.notes,
+      })),
+    )
+  }
+
+  async previewCsvImport(
+    buffer: Buffer,
+    filename: string,
+  ): Promise<AssetCsvPreview> {
+    const parsed = parseAssetCsv(buffer, filename)
+    const { preview } = await this.validateCsvImport(
+      this.dataSource.manager,
+      parsed,
+    )
+    return preview
+  }
+
+  async importCsv(
+    buffer: Buffer,
+    filename: string,
+    user: AuthenticatedUser,
+    request: Request,
+  ): Promise<{
+    operationId: string
+    mode: 'CREATE_ONLY'
+    totalRows: number
+    createdRows: number
+    updatedRows: 0
+    rejectedRows: 0
+  }> {
+    const parsed = parseAssetCsv(buffer, filename)
+    const operationId = randomUUID()
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+        const { preview, categories, locations } = await this.validateCsvImport(
+          manager,
+          parsed,
+        )
+        if (preview.invalidRows > 0) {
+          throw new UnprocessableEntityException({
+            message:
+              'CSV validation failed. Correct the reported rows and retry.',
+            preview,
+          })
+        }
+
+        for (const row of parsed.rows) {
+          const categoryCode = row.values.categoryCode.toUpperCase()
+          const locationCode = row.values.locationCode.toUpperCase()
+          const categoryId = categories.get(categoryCode)
+          const locationId = locationCode
+            ? locations.get(locationCode)
+            : undefined
+          if (!categoryId || (locationCode && !locationId)) {
+            throw new ConflictException(
+              'A category or location changed during import. Preview the file again.',
+            )
+          }
+          await this.insertAsset(
+            manager,
+            assetCsvRowToDto(row, categoryId, locationId),
+            user,
+            request,
+          )
+        }
+
+        await writeAuditLog(
+          manager,
+          request,
+          user.id,
+          'assets.csv_imported',
+          'asset_import',
+          operationId,
+          null,
+          {
+            filename: safeFilename(filename),
+            mode: 'CREATE_ONLY',
+            totalRows: preview.totalRows,
+            createdRows: preview.totalRows,
+            rejectedRows: 0,
+          },
+        )
+        return {
+          operationId,
+          mode: 'CREATE_ONLY',
+          totalRows: preview.totalRows,
+          createdRows: preview.totalRows,
+          updatedRows: 0,
+          rejectedRows: 0,
+        }
+      })
+    } catch (error) {
+      if (getPostgresErrorCode(error) === '23505') {
+        throw new ConflictException(
+          'An asset tag or serial number was added by another request. Preview the file again.',
+        )
+      }
+      throw error
+    }
+  }
+
   async get(id: string, user: AuthenticatedUser): Promise<AssetResponse> {
     const clauses = ['a.id = $1', 'a.deleted_at IS NULL']
     const parameters: unknown[] = [id]
     if (!hasAllAssetRead(user)) {
       clauses.push(
-        `EXISTS (SELECT 1 FROM public.asset_assignments own_assignment
+        `(a.is_shared = true OR EXISTS (SELECT 1 FROM public.asset_assignments own_assignment
                  WHERE own_assignment.asset_id = a.id
                    AND own_assignment.user_id = $2
-                   AND own_assignment.returned_at IS NULL)`,
+                   AND own_assignment.returned_at IS NULL))`,
       )
       parameters.push(user.id)
     }
@@ -216,62 +476,7 @@ export class AssetsService {
 
     try {
       const id = await this.dataSource.transaction(async (manager) => {
-        await this.assertActiveCategory(manager, dto.categoryId)
-        if (dto.locationId) {
-          await this.assertActiveLocation(manager, dto.locationId)
-        }
-        const rows = (await manager.query(
-          `INSERT INTO public.assets
-             (asset_tag, name, category_id, manufacturer, model, serial_number,
-              description, status, condition, location_id, purchase_date,
-              purchase_cost, warranty_start, warranty_end, notes,
-              created_by, updated_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'AVAILABLE', 'GOOD',
-                   $8, $9, $10, $11, $12, $13, $14, $14)
-           RETURNING id`,
-          [
-            assetTag,
-            name,
-            dto.categoryId,
-            clean(dto.manufacturer),
-            clean(dto.model),
-            clean(dto.serialNumber),
-            clean(dto.description),
-            dto.locationId ?? null,
-            dto.purchaseDate ?? null,
-            dto.purchaseCost ?? null,
-            dto.warrantyStart ?? null,
-            dto.warrantyEnd ?? null,
-            clean(dto.notes),
-            user.id,
-          ],
-        )) as Array<{ id: string }>
-        const id = rows[0].id
-        await this.insertStatusHistory(
-          manager,
-          id,
-          null,
-          'AVAILABLE',
-          user.id,
-          'Asset created',
-        )
-        await writeAuditLog(
-          manager,
-          request,
-          user.id,
-          'assets.created',
-          'asset',
-          id,
-          null,
-          {
-            assetTag,
-            name,
-            categoryId: dto.categoryId,
-            locationId: dto.locationId ?? null,
-            status: 'AVAILABLE',
-          },
-        )
-        return id
+        return this.insertAsset(manager, dto, user, request)
       })
       return this.get(id, user)
     } catch (error) {
@@ -293,6 +498,14 @@ export class AssetsService {
     try {
       await this.dataSource.transaction(async (manager) => {
         const old = await this.getAssetForUpdate(manager, id)
+        if (
+          dto.isShared !== undefined &&
+          !user.permissions.includes('assets.share')
+        ) {
+          throw new ForbiddenException(
+            'Only administrators may change shared asset access',
+          )
+        }
         const next = mergeAsset(old, dto)
         if (!next.asset_tag.trim() || !next.name.trim()) {
           throw new BadRequestException('Asset tag and name are required')
@@ -314,7 +527,8 @@ export class AssetsService {
                manufacturer = $5, model = $6, serial_number = $7,
                description = $8, location_id = $9, purchase_date = $10,
                purchase_cost = $11, warranty_start = $12, warranty_end = $13,
-               notes = $14, updated_by = $15, updated_at = now()
+               notes = $14, updated_by = $15,
+               is_shared = COALESCE($16, is_shared), updated_at = now()
            WHERE id = $1`,
           [
             id,
@@ -332,6 +546,7 @@ export class AssetsService {
             next.warranty_end,
             next.notes,
             user.id,
+            dto.isShared ?? null,
           ],
         )
         const oldValues = changedFields(old, next)
@@ -686,6 +901,136 @@ export class AssetsService {
     if (!rows[0]) throw new ConflictException('Category is not active')
   }
 
+  private async insertAsset(
+    manager: EntityManager,
+    dto: CreateAssetDto,
+    user: AuthenticatedUser,
+    request: Request,
+  ): Promise<string> {
+    await this.assertActiveCategory(manager, dto.categoryId)
+    if (dto.locationId) {
+      await this.assertActiveLocation(manager, dto.locationId)
+    }
+    const rows = (await manager.query(
+      `INSERT INTO public.assets
+         (asset_tag, name, category_id, manufacturer, model, serial_number,
+          description, status, condition, location_id, purchase_date,
+          purchase_cost, warranty_start, warranty_end, notes,
+          created_by, updated_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'AVAILABLE', 'GOOD',
+               $8, $9, $10, $11, $12, $13, $14, $14)
+       RETURNING id`,
+      [
+        dto.assetTag.trim(),
+        dto.name.trim(),
+        dto.categoryId,
+        clean(dto.manufacturer),
+        clean(dto.model),
+        clean(dto.serialNumber),
+        clean(dto.description),
+        dto.locationId ?? null,
+        dto.purchaseDate ?? null,
+        dto.purchaseCost ?? null,
+        dto.warrantyStart ?? null,
+        dto.warrantyEnd ?? null,
+        clean(dto.notes),
+        user.id,
+      ],
+    )) as Array<{ id: string }>
+    const id = rows[0].id
+    await this.insertStatusHistory(
+      manager,
+      id,
+      null,
+      'AVAILABLE',
+      user.id,
+      'Asset created',
+    )
+    await writeAuditLog(
+      manager,
+      request,
+      user.id,
+      'assets.created',
+      'asset',
+      id,
+      null,
+      {
+        assetTag: dto.assetTag.trim(),
+        name: dto.name.trim(),
+        categoryId: dto.categoryId,
+        locationId: dto.locationId ?? null,
+        status: 'AVAILABLE',
+      },
+    )
+    return id
+  }
+
+  private async validateCsvImport(
+    manager: EntityManager,
+    parsed: ParsedAssetCsv,
+  ): Promise<{
+    preview: AssetCsvPreview
+    categories: Map<string, string>
+    locations: Map<string, string>
+  }> {
+    const categoryCodes = [
+      ...new Set(
+        parsed.rows
+          .map((row) => row.values.categoryCode.toUpperCase())
+          .filter(Boolean),
+      ),
+    ]
+    const locationCodes = [
+      ...new Set(
+        parsed.rows
+          .map((row) => row.values.locationCode.toUpperCase())
+          .filter(Boolean),
+      ),
+    ]
+    const assetTags = [
+      ...new Set(parsed.rows.map((row) => row.values.assetTag)),
+    ]
+    const serialNumbers = [
+      ...new Set(
+        parsed.rows.map((row) => row.values.serialNumber).filter(Boolean),
+      ),
+    ]
+    const categoryRows = (await manager.query(
+      `SELECT id, code FROM public.asset_categories
+       WHERE code = ANY($1::text[]) AND is_active = true FOR SHARE`,
+      [categoryCodes],
+    )) as Array<{ id: string; code: string }>
+    const locationRows = (await manager.query(
+      `SELECT id, code FROM public.locations
+       WHERE code = ANY($1::text[]) AND is_active = true FOR SHARE`,
+      [locationCodes],
+    )) as Array<{ id: string; code: string }>
+    const existingRows = (await manager.query(
+      `SELECT asset_tag, serial_number FROM public.assets
+       WHERE asset_tag = ANY($1::text[])
+          OR (deleted_at IS NULL AND serial_number = ANY($2::text[]))
+       FOR SHARE`,
+      [assetTags, serialNumbers],
+    )) as Array<{ asset_tag: string; serial_number: string | null }>
+    const categories = new Map(
+      categoryRows.map((row) => [row.code.toUpperCase(), row.id]),
+    )
+    const locations = new Map(
+      locationRows.map((row) => [row.code.toUpperCase(), row.id]),
+    )
+    const preview = validateAssetCsv(parsed, {
+      categories,
+      locations,
+      existingAssetTags: new Set(existingRows.map((row) => row.asset_tag)),
+      existingSerialNumbers: new Set(
+        existingRows
+          .map((row) => row.serial_number)
+          .filter((value): value is string => value !== null),
+      ),
+    })
+    return { preview, categories, locations }
+  }
+
   private async assertActiveLocation(
     manager: EntityManager,
     id: string,
@@ -703,7 +1048,7 @@ export class AssetsService {
     id: string,
   ): Promise<AssetForUpdate> {
     const rows = (await manager.query(
-      `SELECT id, asset_tag, name, category_id, manufacturer, model,
+      `SELECT id, is_shared, asset_tag, name, category_id, manufacturer, model,
               serial_number, description, status, condition, purchase_date,
               purchase_cost, warranty_start, warranty_end, location_id, notes
        FROM public.assets
@@ -733,7 +1078,7 @@ export class AssetsService {
 }
 
 function assetSelect(): string {
-  return `SELECT a.id, a.asset_tag, a.name, a.category_id,
+  return `SELECT a.id, a.asset_code, a.is_shared, a.asset_tag, a.name, a.category_id,
                  c.code AS category_code, c.name AS category_name,
                  a.manufacturer, a.model, a.serial_number, a.description,
                  a.status, a.condition, a.purchase_date, a.purchase_cost,
@@ -756,6 +1101,8 @@ function toAssetResponse(
 ): AssetResponse {
   const response: AssetResponse = {
     id: row.id,
+    assetCode: row.asset_code,
+    isShared: row.is_shared,
     assetTag: row.asset_tag,
     name: row.name,
     category: {
@@ -798,6 +1145,7 @@ function toAssetResponse(
 
 function hasAllAssetRead(user: AuthenticatedUser): boolean {
   return (
+    user.permissions.includes('assets.read.all') ||
     user.roles.includes('ADMIN') ||
     user.roles.includes('AUDIT') ||
     user.permissions.includes('assets.update')
@@ -845,6 +1193,7 @@ function changedFields(
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {}
   for (const field of [
+    'is_shared',
     'asset_tag',
     'name',
     'category_id',
@@ -889,4 +1238,41 @@ function redactAssigneeIds(
   const redacted = { ...values }
   delete redacted.assignedUserId
   return redacted
+}
+
+function assetCsvRowToDto(
+  row: ParsedAssetCsv['rows'][number],
+  categoryId: string,
+  locationId: string | undefined,
+): CreateAssetDto {
+  const value = row.values
+  const purchaseCost = value.purchaseCost
+    ? Number(value.purchaseCost)
+    : undefined
+  return {
+    assetTag: value.assetTag,
+    name: value.name,
+    categoryId,
+    manufacturer: value.manufacturer || undefined,
+    model: value.model || undefined,
+    serialNumber: value.serialNumber || undefined,
+    description: value.description || undefined,
+    locationId,
+    purchaseDate: value.purchaseDate || undefined,
+    purchaseCost,
+    warrantyStart: value.warrantyStart || undefined,
+    warrantyEnd: value.warrantyEnd || undefined,
+    notes: value.notes || undefined,
+  }
+}
+
+function safeFilename(filename: string): string {
+  const withoutControls = basename(filename)
+    .split('')
+    .filter((character) => {
+      const code = character.charCodeAt(0)
+      return code > 0x1f && code !== 0x7f
+    })
+    .join('')
+  return withoutControls.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120)
 }

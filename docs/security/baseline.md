@@ -21,6 +21,9 @@ security certification.
 - Passwords use Argon2id. Login failures use generic credential messages,
   per-account lockout and per-IP throttling. Passwords, hashes, and session
   tokens are not included in application audit events or API responses.
+- pnpm build scripts remain restricted; only `argon2` is allowlisted in
+  `pnpm-workspace.yaml`. CI explicitly rebuilds that package and verifies
+  hash/verify behavior. A clean remote runner result remains pending.
 - Roles and permissions are loaded from the database on authenticated
   requests. Protected routes enforce permissions in the API; user-owned
   tickets and assigned-asset access are scoped server-side. AUDIT permissions
@@ -37,8 +40,10 @@ security certification.
   Ticket, asset, user, and audit writes use explicit transactions where
   required. Readiness performs a lightweight `SELECT 1`; liveness does not
   expose database details.
-- CI runs lint, formatting checks, typechecking, unit tests, and builds.
-  `pnpm audit` checks production dependencies.
+- CI is configured to run lint, formatting checks, typechecking, unit tests,
+  PostgreSQL integration tests, production dependency audit, Argon2 smoke
+  verification, and builds. A remote GitHub Actions run has not yet been
+  observed.
 
 ## Remaining risks and limits
 
@@ -47,9 +52,15 @@ security certification.
 - There is no tested production secret manager, database TLS policy,
   least-privilege runtime database role, centralized log/alert service, or
   audit-log retention/immutability policy.
-- Tests are unit tests with mocked database access; there is no isolated
-  PostgreSQL integration-test suite. Never point tests at the developer
-  database to compensate.
+- Unit tests use mocked database access. The isolated PostgreSQL integration
+  suite verifies migration order, schema essentials, seeded role permissions,
+  real report aggregates/date boundaries under UTC and non-UTC PostgreSQL
+  session timezones, asset/ticket service writes and view semantics, and
+  controlled migration failure rollback. Authenticated HTTP integration tests
+  exercise login, role and object authorization, asset and ticket workflows,
+  reports, audit history, and CSV preview/import validation including rejected
+  batches and upload limits. Never point tests at the developer database to
+  compensate.
 - Backup/restore and application/database rollback procedures are documented
   but have not been restore-tested in an isolated environment.
 - Ticket attachment upload, SLA automation, notifications, and ticket-specific

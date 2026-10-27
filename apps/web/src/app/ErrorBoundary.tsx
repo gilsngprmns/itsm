@@ -22,10 +22,10 @@ export class ErrorBoundary extends Component<
     if (this.state.hasError) {
       return (
         <main className="page" role="alert">
-          <h1>Something went wrong</h1>
-          <p>Reload the page to continue.</p>
+          <h1>Page could not be loaded</h1>
+          <p>Reload the page to try again.</p>
           <button type="button" onClick={() => window.location.reload()}>
-            Reload
+            Reload page
           </button>
         </main>
       )

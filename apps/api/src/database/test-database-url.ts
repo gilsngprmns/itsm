@@ -1,4 +1,5 @@
 export const ISOLATED_TEST_DATABASE_NAME = 'it_db_phase09_test'
+const ISOLATED_CI_TEST_DATABASE_NAME = 'itsm_ci_test'
 
 const ALLOWED_TEST_DATABASE_HOSTS = new Set([
   'localhost',
@@ -39,9 +40,13 @@ export function requireIsolatedTestDatabaseUrl(
     throw new Error('TEST_DATABASE_URL contains invalid URL encoding')
   }
 
-  if (databaseName !== ISOLATED_TEST_DATABASE_NAME) {
+  const isDedicatedDatabase =
+    databaseName === ISOLATED_TEST_DATABASE_NAME ||
+    (process.env.CI?.toLowerCase() === 'true' &&
+      databaseName === ISOLATED_CI_TEST_DATABASE_NAME)
+  if (!isDedicatedDatabase) {
     throw new Error(
-      `TEST_DATABASE_URL must target the dedicated ${ISOLATED_TEST_DATABASE_NAME} database`,
+      'TEST_DATABASE_URL must target the dedicated local test database or the isolated CI test database',
     )
   }
 

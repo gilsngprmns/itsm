@@ -13,4 +13,4 @@ if (typeof databaseUrl !== 'string') {
   throw new Error('DATABASE_URL must be configured')
 }
 
-export default new DataSource(createDatabaseOptions(databaseUrl))
+export default new DataSource(createDatabaseOptions(databaseUrl, 30_000))

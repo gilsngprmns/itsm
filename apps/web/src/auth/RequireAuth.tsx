@@ -1,4 +1,5 @@
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
+import { ErrorBanner } from '../common/Feedback'
 import { useAuth } from './AuthContext'
 
 export function RequireAuth() {
@@ -16,9 +17,13 @@ export function RequireAuth() {
     return (
       <main className="page">
         <h1>Could not check your session</h1>
-        <p role="alert">{error}</p>
+        <ErrorBanner>
+          {error
+            ? 'Unable to check your session. Check your connection and try again.'
+            : 'Unable to check your session. Try again.'}
+        </ErrorBanner>
         <button type="button" onClick={() => void refresh()}>
-          Retry
+          Try again
         </button>
       </main>
     )

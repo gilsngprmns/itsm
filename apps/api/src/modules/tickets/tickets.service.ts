@@ -47,6 +47,7 @@ interface TicketRow {
   location_name: string | null
   priority: TicketPriority
   status: TicketStatus
+  type: 'INCIDENT' | 'SERVICE_REQUEST'
   resolution_summary: string | null
   resolved_at: Date | null
   closed_at: Date | null
@@ -71,7 +72,7 @@ const TICKET_SELECT = `SELECT t.id, t.ticket_number::text AS ticket_number,
        t.category_id, tc.code AS category_code, tc.name AS category_name,
        t.asset_id, a.asset_tag, a.name AS asset_name,
        t.location_id, l.code AS location_code, l.name AS location_name,
-       t.priority, t.status, t.resolution_summary, t.resolved_at,
+       t.priority, t.status, t.type, t.resolution_summary, t.resolved_at,
        t.closed_at, t.created_at, t.updated_at
 FROM public.tickets t
 JOIN public.users requester ON requester.id = t.requester_id
@@ -92,6 +93,7 @@ export interface TicketResponse {
   location: { id: string; code: string; name: string } | null
   priority: TicketPriority
   status: TicketStatus
+  type: 'INCIDENT' | 'SERVICE_REQUEST'
   resolutionSummary: string | null
   resolvedAt: Date | null
   closedAt: Date | null
@@ -138,6 +140,9 @@ export class TicketsService {
     if (!canReadAll) add('t.requester_id = ?', user.id)
     if (query.status) add('t.status = ?', query.status)
     if (query.priority) add('t.priority = ?', query.priority)
+    if (query.type) add('t.type = ?', query.type)
+    if (query.assignedToMe === 'true') add('t.assigned_to = ?', user.id)
+    if (query.unassigned === 'true') where.push('t.assigned_to IS NULL')
     if (query.categoryId) add('t.category_id = ?', query.categoryId)
     if (query.assigneeId) add('t.assigned_to = ?', query.assigneeId)
     if (query.requesterId) add('t.requester_id = ?', query.requesterId)
@@ -186,6 +191,65 @@ export class TicketsService {
     return toTicketResponse(row)
   }
 
+  async linkableAssets(
+    query: { search?: string; page?: number; limit?: number },
+    user: AuthenticatedUser,
+  ): Promise<{
+    items: Array<{
+      id: string
+      assetCode: string
+      assetTag: string
+      name: string
+    }>
+    page: number
+    limit: number
+    total: number
+  }> {
+    const page = query.page ?? 1
+    const limit = query.limit ?? 25
+    const values: unknown[] = [
+      user.permissions.includes('tickets.read.all'),
+      user.id,
+    ]
+    const where = `a.deleted_at IS NULL AND a.status NOT IN ('RETIRED', 'DISPOSED')
+      AND ($1::boolean OR a.is_shared = true OR EXISTS (
+        SELECT 1 FROM public.asset_assignments aa WHERE aa.asset_id = a.id
+          AND aa.user_id = $2 AND aa.returned_at IS NULL))`
+    let searchSql = ''
+    if (query.search?.trim()) {
+      values.push(`%${escapeLike(query.search.trim())}%`)
+      searchSql = ` AND (a.asset_code ILIKE $${values.length} ESCAPE '\\'
+        OR a.asset_tag ILIKE $${values.length} ESCAPE '\\'
+        OR a.name ILIKE $${values.length} ESCAPE '\\')`
+    }
+    const count = (await this.dataSource.query(
+      `SELECT count(*)::int AS total FROM public.assets a WHERE ${where}${searchSql}`,
+      values,
+    )) as Array<{ total: number }>
+    const rows = (await this.dataSource.query(
+      `SELECT a.id, a.asset_code, a.asset_tag, a.name FROM public.assets a
+       WHERE ${where}${searchSql} ORDER BY a.asset_code, a.id
+       LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+      [...values, limit, (page - 1) * limit],
+    )) as Array<{
+      id: string
+      asset_code: string
+      asset_tag: string
+      name: string
+    }>
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        assetCode: row.asset_code,
+        assetTag: row.asset_tag,
+        name: row.name,
+      })),
+      page,
+      limit,
+      total: Number(count[0]?.total ?? 0),
+    }
+  }
+
   async create(
     dto: CreateTicketDto,
     user: AuthenticatedUser,
@@ -204,8 +268,8 @@ export class TicketsService {
       const rows = (await manager.query(
         `INSERT INTO public.tickets
            (subject, description, requester_id, category_id, asset_id,
-            location_id, priority)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+            location_id, priority, type)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id`,
         [
           subject,
@@ -215,6 +279,7 @@ export class TicketsService {
           dto.assetId ?? null,
           dto.locationId ?? null,
           dto.priority ?? 'MEDIUM',
+          dto.type,
         ],
       )) as Array<{ id: string }>
       const ticketId = rows[0].id
@@ -245,8 +310,23 @@ export class TicketsService {
     user: AuthenticatedUser,
     request: Request,
   ): Promise<TicketResponse> {
+    if (
+      user.permissions.includes('tickets.update.assigned') &&
+      !user.permissions.includes('tickets.update') &&
+      (dto.subject !== undefined ||
+        dto.description !== undefined ||
+        dto.categoryId !== undefined ||
+        dto.priority !== undefined ||
+        dto.assetId !== undefined ||
+        dto.locationId !== undefined)
+    ) {
+      throw new ForbiddenException(
+        'IT support can only change ticket type outside assigned workflow updates',
+      )
+    }
     const result = await this.dataSource.transaction(async (manager) => {
       const old = await this.getTicket(manager, id, true)
+      assertCanModifyAssignedTicket(old, user)
       assertEditableStatus(old.status)
       const next = {
         subject: dto.subject === undefined ? old.subject : dto.subject.trim(),
@@ -257,6 +337,7 @@ export class TicketsService {
         categoryId:
           dto.categoryId === undefined ? old.category_id : dto.categoryId,
         priority: dto.priority ?? old.priority,
+        type: dto.type ?? old.type,
         assetId: dto.assetId === undefined ? old.asset_id : dto.assetId,
         locationId:
           dto.locationId === undefined ? old.location_id : dto.locationId,
@@ -269,6 +350,7 @@ export class TicketsService {
         dto.description === undefined &&
         dto.categoryId === undefined &&
         dto.priority === undefined &&
+        dto.type === undefined &&
         dto.assetId === undefined &&
         dto.locationId === undefined
       ) {
@@ -286,7 +368,7 @@ export class TicketsService {
       await manager.query(
         `UPDATE public.tickets
          SET subject = $2, description = $3, category_id = $4, priority = $5,
-             asset_id = $6, location_id = $7, updated_at = now()
+             asset_id = $6, location_id = $7, type = $8, updated_at = now()
          WHERE id = $1`,
         [
           id,
@@ -296,6 +378,7 @@ export class TicketsService {
           next.priority,
           next.assetId,
           next.locationId,
+          next.type,
         ],
       )
       await writeAuditLog(
@@ -308,6 +391,24 @@ export class TicketsService {
         ticketAuditValues(old),
         next,
       )
+      if (old.type !== next.type) {
+        await manager.query(
+          `INSERT INTO public.ticket_type_history
+             (ticket_id, previous_type, new_type, changed_by)
+           VALUES ($1, $2, $3, $4)`,
+          [id, old.type, next.type, user.id],
+        )
+        await writeAuditLog(
+          manager,
+          request,
+          user.id,
+          'tickets.type_changed',
+          'ticket',
+          id,
+          { type: old.type },
+          { type: next.type },
+        )
+      }
       return id
     })
     return this.get(result, user)
@@ -321,6 +422,7 @@ export class TicketsService {
   ): Promise<TicketResponse> {
     await this.dataSource.transaction(async (manager) => {
       const old = await this.getTicket(manager, id, true)
+      assertCanModifyAssignedTicket(old, user)
       if (!canTransitionTicket(old.status, dto.status)) {
         throw new ConflictException(
           `Ticket cannot transition from ${old.status} to ${dto.status}`,
@@ -341,18 +443,18 @@ export class TicketsService {
 
       await manager.query(
         `UPDATE public.tickets
-         SET status = $2,
+         SET status = $2::text,
              resolution_summary = CASE
-               WHEN $2 = 'RESOLVED' THEN $3
-               WHEN $1 = 'RESOLVED' AND $2 = 'IN_PROGRESS' THEN NULL
+               WHEN $2::text = 'RESOLVED' THEN $3
+               WHEN $1::text = 'RESOLVED' AND $2::text = 'IN_PROGRESS' THEN NULL
                ELSE resolution_summary
              END,
              resolved_at = CASE
-               WHEN $2 = 'RESOLVED' THEN now()
-               WHEN $1 = 'RESOLVED' AND $2 = 'IN_PROGRESS' THEN NULL
+               WHEN $2::text = 'RESOLVED' THEN now()
+               WHEN $1::text = 'RESOLVED' AND $2::text = 'IN_PROGRESS' THEN NULL
                ELSE resolved_at
              END,
-             closed_at = CASE WHEN $2 = 'CLOSED' THEN now() ELSE NULL END,
+             closed_at = CASE WHEN $2::text = 'CLOSED' THEN now() ELSE NULL END,
              updated_at = now()
          WHERE id = $4`,
         [old.status, dto.status, resolutionSummary, id],
@@ -391,6 +493,7 @@ export class TicketsService {
     const assigneeId = dto.assigneeId
     await this.dataSource.transaction(async (manager) => {
       const ticket = await this.getTicket(manager, id, true)
+      assertCanModifyAssignedTicket(ticket, user)
       assertEditableStatus(ticket.status)
       if (assigneeId === ticket.assigned_to) {
         throw new ConflictException('Ticket is already assigned to this user')
@@ -438,13 +541,54 @@ export class TicketsService {
       `SELECT DISTINCT u.id, u.full_name
        FROM public.users u
        JOIN public.user_roles ur ON ur.user_id = u.id
-       JOIN public.role_permissions rp ON rp.role_id = ur.role_id
-       JOIN public.permissions p ON p.id = rp.permission_id
+       JOIN public.roles r ON r.id = ur.role_id
        WHERE u.is_active = true AND u.deleted_at IS NULL
-         AND p.code = 'tickets.update'
+         AND r.code = 'IT_SUPPORT'
        ORDER BY u.full_name, u.id`,
     )) as Array<{ id: string; full_name: string }>
     return rows.map((row) => ({ id: row.id, fullName: row.full_name }))
+  }
+
+  async selfAssign(
+    id: string,
+    user: AuthenticatedUser,
+    request: Request,
+  ): Promise<TicketResponse> {
+    await this.dataSource.transaction(async (manager) => {
+      const rows = (await manager.query(
+        `UPDATE public.tickets SET assigned_to = $2, updated_at = now()
+         WHERE id = $1 AND assigned_to IS NULL AND deleted_at IS NULL
+           AND status NOT IN ('CLOSED', 'CANCELLED')
+         RETURNING id`,
+        [id, user.id],
+      )) as Array<{ id: string }>
+      if (!rows.length) {
+        const exists = (await manager.query(
+          `SELECT id FROM public.tickets WHERE id = $1 AND deleted_at IS NULL`,
+          [id],
+        )) as unknown[]
+        if (!exists.length) throw new NotFoundException('Ticket not found')
+        throw new ConflictException(
+          'Ticket was already assigned. Refresh the queue.',
+        )
+      }
+      await manager.query(
+        `INSERT INTO public.ticket_assignments (ticket_id, assignee_id, assigned_by)
+         VALUES ($1, $2, $2)`,
+        [id, user.id],
+      )
+      await writeAuditLog(
+        manager,
+        request,
+        user.id,
+        'tickets.self_assigned',
+        'ticket',
+        id,
+        null,
+        { assigneeId: user.id },
+      )
+    })
+    return this.get(id, user)
   }
 
   async comments(
@@ -461,7 +605,9 @@ export class TicketsService {
   > {
     const ticket = await this.getTicket(this.dataSource.manager, id)
     assertCanReadTicket(ticket, user)
-    const canViewInternal = user.permissions.includes('tickets.update')
+    const canViewInternal =
+      user.permissions.includes('tickets.update') ||
+      user.permissions.includes('tickets.update.assigned')
     const rows = (await this.dataSource.query(
       `SELECT c.id, c.body, c.is_internal, c.author_id,
               u.full_name AS author_name, c.created_at
@@ -496,11 +642,16 @@ export class TicketsService {
   ): Promise<void> {
     const body = dto.body.trim()
     if (!body) throw new BadRequestException('Comment body is required')
-    if (dto.isInternal && !user.permissions.includes('tickets.update')) {
+    if (
+      dto.isInternal &&
+      !user.permissions.includes('tickets.update') &&
+      !user.permissions.includes('tickets.update.assigned')
+    ) {
       throw new ForbiddenException('Internal notes are restricted')
     }
     await this.dataSource.transaction(async (manager) => {
       const ticket = await this.getTicket(manager, id, true)
+      assertCanModifyAssignedTicket(ticket, user)
       assertCanReadTicket(ticket, user)
       assertEditableStatus(ticket.status)
       const rows = (await manager.query(
@@ -546,14 +697,29 @@ export class TicketsService {
       unassignedAt: Date | null
       reason: string | null
     }>
+    types: Array<{
+      previousType: string
+      newType: string
+      changedBy: string | null
+      changedByName: string | null
+      changedAt: Date
+    }>
   }> {
     const ticket = await this.getTicket(this.dataSource.manager, id)
     assertCanReadTicket(ticket, user)
-    const [statuses, assignments] = (await Promise.all([
+    const [statuses, types, assignments] = (await Promise.all([
       this.dataSource.query(
         `SELECT h.previous_status, h.new_status, h.reason, h.changed_by,
                 actor.full_name AS changed_by_name, h.changed_at
          FROM public.ticket_status_history h
+         LEFT JOIN public.users actor ON actor.id = h.changed_by
+         WHERE h.ticket_id = $1 ORDER BY h.changed_at, h.id`,
+        [id],
+      ),
+      this.dataSource.query(
+        `SELECT h.previous_type, h.new_type, h.changed_by,
+                actor.full_name AS changed_by_name, h.changed_at
+         FROM public.ticket_type_history h
          LEFT JOIN public.users actor ON actor.id = h.changed_by
          WHERE h.ticket_id = $1 ORDER BY h.changed_at, h.id`,
         [id],
@@ -573,6 +739,13 @@ export class TicketsService {
         previous_status: string | null
         new_status: string
         reason: string | null
+        changed_by: string | null
+        changed_by_name: string | null
+        changed_at: Date
+      }>,
+      Array<{
+        previous_type: string
+        new_type: string
         changed_by: string | null
         changed_by_name: string | null
         changed_at: Date
@@ -604,6 +777,13 @@ export class TicketsService {
         assignedAt: row.assigned_at,
         unassignedAt: row.unassigned_at,
         reason: row.notes,
+      })),
+      types: types.map((row) => ({
+        previousType: row.previous_type,
+        newType: row.new_type,
+        changedBy: row.changed_by,
+        changedByName: row.changed_by_name,
+        changedAt: row.changed_at,
       })),
     }
   }
@@ -791,9 +971,9 @@ export class TicketsService {
        WHERE a.id = $1
          AND ($2::boolean OR EXISTS (
            SELECT 1 FROM public.asset_assignments aa
-           WHERE aa.asset_id = a.id AND aa.assignee_id = $3
+           WHERE aa.asset_id = a.id AND aa.user_id = $3
              AND aa.returned_at IS NULL
-         ))`,
+         ) OR a.is_shared = true)`,
       [id, canReadAll, user.id],
     )) as unknown[]
     if (!rows.length) {
@@ -814,9 +994,8 @@ export class TicketsService {
          AND EXISTS (
            SELECT 1
            FROM public.user_roles ur
-           JOIN public.role_permissions rp ON rp.role_id = ur.role_id
-           JOIN public.permissions p ON p.id = rp.permission_id
-           WHERE ur.user_id = u.id AND p.code = 'tickets.update'
+           JOIN public.roles r ON r.id = ur.role_id
+           WHERE ur.user_id = u.id AND r.code = 'IT_SUPPORT'
          )`,
       [id],
     )) as unknown[]
@@ -835,6 +1014,19 @@ function assertCanReadTicket(ticket: TicketRow, user: AuthenticatedUser): void {
       ticket.requester_id !== user.id)
   ) {
     throw new NotFoundException('Ticket not found')
+  }
+}
+
+function assertCanModifyAssignedTicket(
+  ticket: TicketRow,
+  user: AuthenticatedUser,
+): void {
+  if (
+    user.permissions.includes('tickets.update.assigned') &&
+    !user.permissions.includes('tickets.update') &&
+    ticket.assigned_to !== user.id
+  ) {
+    throw new ForbiddenException('You can only change tickets assigned to you')
   }
 }
 
@@ -877,6 +1069,7 @@ function toTicketResponse(row: TicketRow): TicketResponse {
         : null,
     priority: row.priority,
     status: row.status,
+    type: row.type,
     resolutionSummary: row.resolution_summary,
     resolvedAt: row.resolved_at,
     closedAt: row.closed_at,

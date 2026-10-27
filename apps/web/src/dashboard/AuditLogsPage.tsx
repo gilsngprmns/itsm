@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { EmptyState, ErrorBanner } from '../common/Feedback'
+import { formatDateTimeFull } from '../common/format'
+import { PageHeader } from '../common/PageHeader'
 import { ApiRequestError, apiRequest } from '../lib/api'
 import type { AuditListResult } from './report-types'
 import { dateTimeLabel, readableLabel } from './report-utils'
@@ -31,7 +34,7 @@ export function AuditLogsPage() {
       setError(
         cause instanceof ApiRequestError && cause.status === 403
           ? 'Your account does not have permission to view audit events.'
-          : 'Unable to load audit events.',
+          : 'Audit events could not be loaded. Try again.',
       )
     } finally {
       setLoading(false)
@@ -57,15 +60,7 @@ export function AuditLogsPage() {
 
   return (
     <main className="page management-page dashboard-page">
-      <header className="page-header dashboard-heading">
-        <div>
-          <p className="eyebrow">Read only</p>
-          <h1>Audit log</h1>
-          <p className="intro">
-            Server-recorded administrative and operational activity.
-          </p>
-        </div>
-      </header>
+      <PageHeader title="Audit log" />
       <div className="audit-toolbar">
         <form className="search-form" onSubmit={submitSearch}>
           <label>
@@ -99,17 +94,17 @@ export function AuditLogsPage() {
         </label>
       </div>
       {error && (
-        <div className="error-banner dashboard-error" role="alert">
+        <ErrorBanner className="dashboard-error">
           <span>{error}</span>
           <button onClick={() => void load()} type="button">
-            Retry
+            Try again
           </button>
-        </div>
+        </ErrorBanner>
       )}
       {loading ? (
         <p role="status">Loading audit activity…</p>
       ) : items.length === 0 ? (
-        <p className="empty-state">No audit events match these filters.</p>
+        <EmptyState message="No audit events found. Change the filters or search terms." />
       ) : (
         <div className="table-scroll audit-table-scroll">
           <table className="data-table">
@@ -126,7 +121,10 @@ export function AuditLogsPage() {
               {items.map((item) => (
                 <tr key={item.id}>
                   <td>
-                    <time dateTime={item.createdAt}>
+                    <time
+                      dateTime={item.createdAt}
+                      title={formatDateTimeFull(item.createdAt)}
+                    >
                       {dateTimeLabel(item.createdAt)}
                     </time>
                   </td>
@@ -134,7 +132,7 @@ export function AuditLogsPage() {
                   <td>{readableLabel(item.action)}</td>
                   <td>{readableLabel(item.entityType)}</td>
                   <td className="reference-cell">
-                    {item.entityId?.slice(0, 8) ?? '—'}
+                    {item.entityId ?? 'Not available'}
                   </td>
                 </tr>
               ))}
@@ -152,10 +150,11 @@ export function AuditLogsPage() {
             }}
             type="button"
           >
-            Previous
+            Previous page
           </button>
           <span>
-            Page {page} of {pageCount} · {total} events
+            Showing {(page - 1) * 25 + 1} to {Math.min(page * 25, total)} of{' '}
+            {total} events
           </span>
           <button
             disabled={page >= pageCount}
@@ -165,7 +164,7 @@ export function AuditLogsPage() {
             }}
             type="button"
           >
-            Next
+            Next page
           </button>
         </nav>
       )}

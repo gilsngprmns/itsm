@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
-import { ApiRequestError, apiRequest } from '../lib/api'
+import { formatDate, formatDateTime } from '../common/format'
+import { StatusBadge, statusLabel } from '../common/StatusBadge'
+import { ApiRequestError, apiRequest, buildApiUrl } from '../lib/api'
+import { onTicketChanged } from '../tickets/ticket-events'
 
 interface AssetDetail {
   id: string
+  assetCode: string
+  isShared: boolean
   assetTag: string
   name: string
   category: { id: string; name: string }
@@ -72,7 +77,7 @@ function failureMessage(error: unknown): string {
 }
 
 function displayValue(value: unknown): string {
-  if (value === null || value === undefined) return '—'
+  if (value === null || value === undefined) return 'Not set'
   if (typeof value === 'string') return value
   return JSON.stringify(value)
 }
@@ -95,6 +100,20 @@ export function AssetDetailsPage() {
   const canUpdate = user?.permissions.includes('assets.update') ?? false
   const canAssign = user?.permissions.includes('assets.assign') ?? false
   const canRetire = user?.permissions.includes('assets.retire') ?? false
+  const canShare = user?.permissions.includes('assets.share') ?? false
+  const canReadTickets =
+    user?.permissions.some((permission) =>
+      ['tickets.read.all', 'tickets.read.own'].includes(permission),
+    ) ?? false
+  const [linkedTickets, setLinkedTickets] = useState<
+    Array<{ id: string; ticketNumber: string; subject: string; status: string }>
+  >([])
+  const [linkedTicketPage, setLinkedTicketPage] = useState(1)
+  const [linkedTicketSummary, setLinkedTicketSummary] = useState<{
+    total: number
+    open: number
+    lastTicketAt: string | null
+  }>({ total: 0, open: 0, lastTicketAt: null })
 
   const load = useCallback(async () => {
     try {
@@ -108,6 +127,25 @@ export function AssetDetailsPage() {
       setAsset(assetResult)
       setHistory(historyResult)
       setAssignments(assignmentResult)
+      if (canReadTickets) {
+        const linked = await apiRequest<{
+          items: Array<{
+            id: string
+            ticketNumber: string
+            subject: string
+            status: string
+          }>
+          total: number
+          open: number
+          lastTicketAt: string | null
+        }>(`assets/${id}/tickets?limit=10&page=${linkedTicketPage}`)
+        setLinkedTickets(linked.items)
+        setLinkedTicketSummary({
+          total: linked.total,
+          open: linked.open,
+          lastTicketAt: linked.lastTicketAt,
+        })
+      }
       setError(null)
       if (canAssign) {
         const usersResult = await apiRequest<UserList>('users?limit=100')
@@ -118,7 +156,7 @@ export function AssetDetailsPage() {
     } finally {
       setLoading(false)
     }
-  }, [id, canAssign])
+  }, [id, canAssign, canReadTickets, linkedTicketPage])
 
   useEffect(() => {
     let active = true
@@ -129,6 +167,16 @@ export function AssetDetailsPage() {
       active = false
     }
   }, [load])
+
+  useEffect(
+    () =>
+      onTicketChanged(() => {
+        if (!canReadTickets) return
+        setLoading(true)
+        void load()
+      }),
+    [canReadTickets, load],
+  )
 
   const updateAsset = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -151,6 +199,7 @@ export function AssetDetailsPage() {
           warrantyStart: asset.warrantyStart,
           warrantyEnd: asset.warrantyEnd,
           notes: asset.notes,
+          ...(canShare ? { isShared: asset.isShared } : {}),
         }),
       })
       setNotice('Asset details updated.')
@@ -276,10 +325,11 @@ export function AssetDetailsPage() {
     <main className="page management-page">
       <header className="page-header">
         <div>
-          <p className="eyebrow">{asset.assetTag}</p>
           <h1>{asset.name}</h1>
-          <p className="intro">
-            {asset.category.name} · {asset.status.replace('_', ' ')}
+          <p className="ticket-meta">
+            <span className="asset-reference">{asset.assetCode}</span>
+            <span className="asset-reference">{asset.assetTag}</span>
+            <StatusBadge value={asset.status} />
           </p>
         </div>
       </header>
@@ -295,42 +345,61 @@ export function AssetDetailsPage() {
       )}
 
       <section className="detail-panel" aria-label="Asset details">
+        <div className="asset-qr">
+          <img
+            alt={`QR code for ${asset.assetCode}`}
+            src={buildApiUrl(`assets/${asset.id}/qr`)}
+          />
+          <p>Scan to open this asset after signing in.</p>
+        </div>
         <dl className="detail-grid">
           <div>
             <dt>Category</dt>
             <dd>{asset.category.name}</dd>
           </div>
           <div>
+            <dt>Ticket sharing</dt>
+            <dd>
+              {asset.isShared ? 'Shared' : 'Restricted to assignee and staff'}
+            </dd>
+          </div>
+          <div>
             <dt>Status</dt>
-            <dd>{asset.status.replace('_', ' ')}</dd>
+            <dd>
+              <StatusBadge value={asset.status} />
+            </dd>
           </div>
           <div>
             <dt>Location</dt>
-            <dd>{asset.location?.name ?? '—'}</dd>
+            <dd>{asset.location?.name ?? 'No location'}</dd>
           </div>
           <div>
             <dt>Assigned to</dt>
-            <dd>{asset.assignedUser?.fullName ?? '—'}</dd>
+            <dd>{asset.assignedUser?.fullName ?? 'Unassigned'}</dd>
           </div>
           <div>
             <dt>Manufacturer</dt>
-            <dd>{asset.manufacturer ?? '—'}</dd>
+            <dd>{asset.manufacturer ?? 'Not provided'}</dd>
           </div>
           <div>
             <dt>Model</dt>
-            <dd>{asset.model ?? '—'}</dd>
+            <dd>{asset.model ?? 'Not provided'}</dd>
           </div>
           <div>
             <dt>Serial number</dt>
-            <dd>{asset.serialNumber ?? '—'}</dd>
+            <dd>{asset.serialNumber ?? 'Not provided'}</dd>
           </div>
           <div>
             <dt>Purchase date</dt>
-            <dd>{asset.purchaseDate ?? '—'}</dd>
+            <dd>
+              {asset.purchaseDate ? formatDate(asset.purchaseDate) : 'Not set'}
+            </dd>
           </div>
           <div>
             <dt>Warranty ends</dt>
-            <dd>{asset.warrantyEnd ?? '—'}</dd>
+            <dd>
+              {asset.warrantyEnd ? formatDate(asset.warrantyEnd) : 'Not set'}
+            </dd>
           </div>
           <div>
             <dt>Condition</dt>
@@ -338,7 +407,7 @@ export function AssetDetailsPage() {
           </div>
           <div className="field-wide">
             <dt>Notes</dt>
-            <dd>{asset.notes ?? '—'}</dd>
+            <dd>{asset.notes ?? 'No notes'}</dd>
           </div>
         </dl>
       </section>
@@ -434,6 +503,18 @@ export function AssetDetailsPage() {
               />
             </label>
           </div>
+          {canShare && (
+            <label className="checkbox-field">
+              <input
+                checked={asset.isShared}
+                onChange={(event) =>
+                  setAsset({ ...asset, isShared: event.target.checked })
+                }
+                type="checkbox"
+              />{' '}
+              Allow users to link this asset to their tickets
+            </label>
+          )}
           <button disabled={saving} type="submit">
             {saving ? 'Saving…' : 'Save asset'}
           </button>
@@ -457,7 +538,7 @@ export function AssetDetailsPage() {
                 <option value="">Select status</option>
                 {statusChoices.map((value) => (
                   <option key={value} value={value}>
-                    {value.replace('_', ' ')}
+                    {statusLabel(value)}
                   </option>
                 ))}
               </select>
@@ -500,7 +581,7 @@ export function AssetDetailsPage() {
                     .map((record) => (
                       <option key={record.id} value={record.id}>
                         {record.fullName}
-                        {record.email ? ` · ${record.email}` : ''}
+                        {record.email ? ` (${record.email})` : ''}
                       </option>
                     ))}
                 </select>
@@ -540,14 +621,63 @@ export function AssetDetailsPage() {
                   {assignment.assignedUser?.fullName ?? 'Assigned user'}
                 </strong>
                 <span>
-                  {new Date(assignment.assignedAt).toLocaleString()}
+                  {formatDateTime(assignment.assignedAt)}
                   {assignment.returnedAt
-                    ? ` – returned ${new Date(assignment.returnedAt).toLocaleString()}`
-                    : ' – current'}
+                    ? ` Returned ${formatDateTime(assignment.returnedAt)}.`
+                    : ' Current assignment.'}
                 </span>
               </li>
             ))}
           </ul>
+        </section>
+      )}
+
+      {canReadTickets && (
+        <section className="detail-panel">
+          <h2>Related tickets</h2>
+          <p>
+            {linkedTicketSummary.total} total · {linkedTicketSummary.open} open
+            · Last ticket{' '}
+            {linkedTicketSummary.lastTicketAt
+              ? formatDateTime(linkedTicketSummary.lastTicketAt)
+              : 'none'}
+          </p>
+          {linkedTickets.length ? (
+            <ul>
+              {linkedTickets.map((ticket) => (
+                <li key={ticket.id}>
+                  <Link to={`/tickets/${ticket.id}`}>
+                    {ticket.ticketNumber} — {ticket.subject}
+                  </Link>{' '}
+                  ({statusLabel(ticket.status)})
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No tickets have been linked to this asset.</p>
+          )}
+          {linkedTicketSummary.total > 10 && (
+            <nav aria-label="Related ticket pages" className="pagination">
+              <button
+                disabled={linkedTicketPage <= 1}
+                onClick={() => setLinkedTicketPage((page) => page - 1)}
+                type="button"
+              >
+                Previous
+              </button>
+              <span>
+                Page {linkedTicketPage} of{' '}
+                {Math.ceil(linkedTicketSummary.total / 10)}
+              </span>
+              <button
+                disabled={linkedTicketPage * 10 >= linkedTicketSummary.total}
+                onClick={() => setLinkedTicketPage((page) => page + 1)}
+                type="button"
+              >
+                Next
+              </button>
+            </nav>
+          )}
         </section>
       )}
 
@@ -560,7 +690,7 @@ export function AssetDetailsPage() {
             {history.map((entry) => (
               <li key={`${entry.id}-${entry.action}`}>
                 <strong>{entry.action.replaceAll('.', ' ')}</strong>
-                <span>{new Date(entry.createdAt).toLocaleString()}</span>
+                <span>{formatDateTime(entry.createdAt)}</span>
                 <small>Before: {displayValue(entry.oldValues)}</small>
                 <small>After: {displayValue(entry.newValues)}</small>
               </li>

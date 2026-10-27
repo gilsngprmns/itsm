@@ -6,9 +6,12 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator'
-import { TICKET_PRIORITIES } from '../ticket-status'
+import { TICKET_PRIORITIES, TICKET_TYPES } from '../ticket-status'
 
 export class CreateTicketDto {
+  @IsIn(TICKET_TYPES)
+  type!: (typeof TICKET_TYPES)[number]
+
   @IsString()
   @MinLength(1)
   @MaxLength(200)

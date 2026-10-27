@@ -1,11 +1,12 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
-import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom'
-import { AuthProvider, useAuth } from './auth/AuthContext'
+import { lazy, Suspense, useEffect, useState } from 'react'
+import { BrowserRouter, Link, Route, Routes } from 'react-router-dom'
+import { AuthProvider } from './auth/AuthContext'
 import { RequirePermission } from './auth/RequirePermission'
 import { RequireAnyPermission } from './auth/RequireAnyPermission'
 import { RequireAuth } from './auth/RequireAuth'
 import { apiRequest } from './lib/api'
 import { AuthenticatedLayout } from './app/AuthenticatedLayout'
+import { HomePage } from './HomePage'
 import './App.css'
 
 const LoginPage = lazy(() =>
@@ -16,6 +17,11 @@ const LoginPage = lazy(() =>
 const AssetDetailsPage = lazy(() =>
   import('./assets/AssetDetailsPage').then((module) => ({
     default: module.AssetDetailsPage,
+  })),
+)
+const AssetCodeRedirectPage = lazy(() =>
+  import('./assets/AssetCodeRedirectPage').then((module) => ({
+    default: module.AssetCodeRedirectPage,
   })),
 )
 const AssetsPage = lazy(() =>
@@ -38,6 +44,11 @@ const TicketDetailsPage = lazy(() =>
     default: module.TicketDetailsPage,
   })),
 )
+const TicketPrintPage = lazy(() =>
+  import('./tickets/TicketPrintPage').then((module) => ({
+    default: module.TicketPrintPage,
+  })),
+)
 const TicketsPage = lazy(() =>
   import('./tickets/TicketsPage').then((module) => ({
     default: module.TicketsPage,
@@ -53,86 +64,16 @@ const DashboardPage = lazy(() =>
     default: module.DashboardPage,
   })),
 )
+const MasterDataPage = lazy(() =>
+  import('./master-data/MasterDataPage').then((module) => ({
+    default: module.MasterDataPage,
+  })),
+)
 const ReportsPage = lazy(() =>
   import('./dashboard/ReportsPage').then((module) => ({
     default: module.ReportsPage,
   })),
 )
-
-interface HealthResponse {
-  status: 'ok'
-  service: string
-  timestamp: string
-}
-
-function HomePage() {
-  const { status } = useAuth()
-  const [apiStatus, setApiStatus] = useState<
-    'loading' | 'available' | 'unavailable'
-  >('loading')
-
-  const loadApiStatus = useCallback(async () => {
-    try {
-      await apiRequest<HealthResponse>('health')
-      return 'available' as const
-    } catch {
-      return 'unavailable' as const
-    }
-  }, [])
-
-  useEffect(() => {
-    let active = true
-    void loadApiStatus().then((status) => {
-      if (active) {
-        setApiStatus(status)
-      }
-    })
-    return () => {
-      active = false
-    }
-  }, [loadApiStatus])
-
-  const retryApi = async () => {
-    setApiStatus('loading')
-    setApiStatus(await loadApiStatus())
-  }
-
-  if (status === 'authenticated') {
-    return <Navigate to="/dashboard" replace />
-  }
-
-  return (
-    <main className="page">
-      <p className="eyebrow">IT Asset &amp; Service Management</p>
-      <h1>IT Asset &amp; Service Management</h1>
-      <p className="intro">Manage your IT services and assets.</p>
-      <p>
-        <Link className="button-link button-primary" to="/login">
-          Sign in
-        </Link>
-      </p>
-      <section aria-labelledby="api-status-heading" className="status-card">
-        <h2 id="api-status-heading">API connection</h2>
-        <p aria-live="polite">
-          {apiStatus === 'loading' && 'Checking API availability…'}
-          {apiStatus === 'available' && 'API is available.'}
-          {apiStatus === 'unavailable' &&
-            'API is unavailable. Start the backend and try again.'}
-        </p>
-        {apiStatus === 'unavailable' && (
-          <button
-            type="button"
-            onClick={() => {
-              void retryApi()
-            }}
-          >
-            Retry
-          </button>
-        )}
-      </section>
-    </main>
-  )
-}
 
 function AdminPage() {
   const [access, setAccess] = useState<'loading' | 'granted' | 'denied'>(
@@ -146,11 +87,11 @@ function AdminPage() {
       .then(() => {
         if (active) setAccess('granted')
       })
-      .catch((cause: unknown) => {
+      .catch(() => {
         if (active) {
           setAccess('denied')
           setError(
-            cause instanceof Error ? cause.message : 'Access was denied.',
+            'Could not verify administrator access. Return home and sign in again.',
           )
         }
       })
@@ -200,11 +141,29 @@ function App() {
                 <Route
                   element={
                     <RequireAnyPermission
+                      permissions={[
+                        'assets.read',
+                        'tickets.read.all',
+                        'tickets.read.own',
+                        'users.read',
+                      ]}
+                    />
+                  }
+                >
+                  <Route path="/master-data" element={<MasterDataPage />} />
+                </Route>
+                <Route
+                  element={
+                    <RequireAnyPermission
                       permissions={['tickets.read.all', 'tickets.read.own']}
                     />
                   }
                 >
                   <Route path="/tickets" element={<TicketsPage />} />
+                  <Route
+                    path="/tickets/:id/print"
+                    element={<TicketPrintPage />}
+                  />
                   <Route path="/tickets/:id" element={<TicketDetailsPage />} />
                 </Route>
                 <Route element={<RequirePermission permission="users.read" />}>
@@ -212,6 +171,10 @@ function App() {
                 </Route>
                 <Route element={<RequirePermission permission="assets.read" />}>
                   <Route path="/assets" element={<AssetsPage />} />
+                  <Route
+                    path="/assets/by-code/:code"
+                    element={<AssetCodeRedirectPage />}
+                  />
                   <Route path="/assets/:id" element={<AssetDetailsPage />} />
                 </Route>
                 <Route

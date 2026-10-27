@@ -8,6 +8,8 @@ export const TICKET_STATUSES = [
 ] as const
 
 export type TicketStatus = (typeof TICKET_STATUSES)[number]
+export const TICKET_TYPES = ['INCIDENT', 'SERVICE_REQUEST'] as const
+export type TicketType = (typeof TICKET_TYPES)[number]
 export type TicketPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
 
 export interface TicketCategory {
@@ -31,6 +33,7 @@ export interface Ticket {
   location: { id: string; code: string; name: string } | null
   priority: TicketPriority
   status: TicketStatus
+  type: TicketType
   resolutionSummary: string | null
   resolvedAt: string | null
   closedAt: string | null
@@ -70,6 +73,13 @@ export interface TicketHistory {
     assignedAt: string
     unassignedAt: string | null
     reason: string | null
+  }>
+  types: Array<{
+    previousType: string
+    newType: string
+    changedBy: string | null
+    changedByName: string | null
+    changedAt: string
   }>
 }
 

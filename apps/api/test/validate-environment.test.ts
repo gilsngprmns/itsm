@@ -2,16 +2,28 @@ import { describe, expect, it } from 'vitest'
 import { validateEnvironment } from '../src/config/validate-environment'
 
 const validEnvironment = {
+  NODE_ENV: 'development',
   DATABASE_URL: 'postgresql://postgres:replace-me@127.0.0.1:5432/it_db',
 }
 
 describe('validateEnvironment', () => {
-  it('applies safe development defaults and parses the port', () => {
-    expect(validateEnvironment(validEnvironment)).toMatchObject({
+  it('applies development defaults when NODE_ENV is explicit', () => {
+    expect(
+      validateEnvironment({ ...validEnvironment, NODE_ENV: 'development' }),
+    ).toMatchObject({
       NODE_ENV: 'development',
       PORT: 3000,
       CORS_ORIGINS: 'http://localhost:5173',
     })
+  })
+
+  it('requires NODE_ENV rather than silently defaulting to development', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: undefined,
+        DATABASE_URL: 'postgres://localhost/it_db',
+      }),
+    ).toThrow('NODE_ENV is required')
   })
 
   it('rejects wildcard CORS origins', () => {
@@ -56,6 +68,7 @@ describe('validateEnvironment', () => {
   it('rejects non-PostgreSQL database URLs', () => {
     expect(() =>
       validateEnvironment({
+        NODE_ENV: 'development',
         DATABASE_URL: 'https://example.test/db',
       }),
     ).toThrow('DATABASE_URL must be a valid PostgreSQL URL')
@@ -64,6 +77,7 @@ describe('validateEnvironment', () => {
   it('accepts a URL-encoded password and preserves the it_db target', () => {
     expect(
       validateEnvironment({
+        NODE_ENV: 'development',
         DATABASE_URL: 'postgresql://postgres:pa%40ss@127.0.0.1:5432/it_db',
       }).DATABASE_URL,
     ).toBe('postgresql://postgres:pa%40ss@127.0.0.1:5432/it_db')
@@ -72,6 +86,7 @@ describe('validateEnvironment', () => {
   it('rejects malformed URL encoding without exposing the connection string', () => {
     expect(() =>
       validateEnvironment({
+        NODE_ENV: 'development',
         DATABASE_URL: 'postgresql://postgres:secret%2@127.0.0.1:5432/it_db',
       }),
     ).toThrow('DATABASE_URL must use valid URL encoding')
@@ -80,6 +95,7 @@ describe('validateEnvironment', () => {
   it('requires an explicit database name', () => {
     expect(() =>
       validateEnvironment({
+        NODE_ENV: 'development',
         DATABASE_URL: 'postgresql://postgres:secret@127.0.0.1:5432/',
       }),
     ).toThrow('DATABASE_URL must include a database name')

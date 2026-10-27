@@ -9,7 +9,11 @@ import {
   MaxLength,
   Min,
 } from 'class-validator'
-import { TICKET_PRIORITIES, TICKET_STATUSES } from '../ticket-status'
+import {
+  TICKET_PRIORITIES,
+  TICKET_STATUSES,
+  TICKET_TYPES,
+} from '../ticket-status'
 
 export class ListTicketsDto {
   @IsOptional()
@@ -24,6 +28,18 @@ export class ListTicketsDto {
   @IsOptional()
   @IsIn(TICKET_PRIORITIES)
   priority?: (typeof TICKET_PRIORITIES)[number]
+
+  @IsOptional()
+  @IsIn(TICKET_TYPES)
+  type?: (typeof TICKET_TYPES)[number]
+
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  assignedToMe?: 'true' | 'false'
+
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  unassigned?: 'true' | 'false'
 
   @IsOptional()
   @IsUUID()

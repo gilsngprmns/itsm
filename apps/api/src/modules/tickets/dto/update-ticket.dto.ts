@@ -5,10 +5,15 @@ import {
   IsUUID,
   MaxLength,
   MinLength,
+  ValidateIf,
 } from 'class-validator'
-import { TICKET_PRIORITIES } from '../ticket-status'
+import { TICKET_PRIORITIES, TICKET_TYPES } from '../ticket-status'
 
 export class UpdateTicketDto {
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsIn(TICKET_TYPES)
+  type?: (typeof TICKET_TYPES)[number]
+
   @IsOptional()
   @IsString()
   @MinLength(1)
