@@ -6,10 +6,11 @@ import {
   TicketsController,
 } from './tickets.controller'
 import { TicketsService } from './tickets.service'
+import { TicketAttachmentStorageService } from './ticket-attachment-storage.service'
 
 @Module({
   imports: [DatabaseModule, AuthModule],
   controllers: [TicketsController, TicketCategoriesController],
-  providers: [TicketsService],
+  providers: [TicketsService, TicketAttachmentStorageService],
 })
 export class TicketsModule {}

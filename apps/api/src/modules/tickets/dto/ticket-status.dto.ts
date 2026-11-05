@@ -1,4 +1,10 @@
-import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator'
+import {
+  IsIn,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator'
 import { TICKET_STATUSES } from '../ticket-status'
 
 export class TicketStatusDto {
@@ -12,6 +18,7 @@ export class TicketStatusDto {
 
   @IsOptional()
   @IsString()
+  @MinLength(20)
   @MaxLength(4000)
   resolutionSummary?: string
 }

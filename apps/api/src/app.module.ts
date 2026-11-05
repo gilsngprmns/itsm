@@ -1,7 +1,10 @@
 import { Module } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
 import { validateEnvironment } from './config/validate-environment'
-import { resolveWorkspaceEnvironmentFile } from './config/workspace-environment'
+import {
+  resolveWorkspaceEnvironmentFile,
+  shouldLoadWorkspaceEnvironmentFile,
+} from './config/workspace-environment'
 import { DatabaseModule } from './database/database.module'
 import { AuthModule } from './modules/auth/auth.module'
 import { AdminModule } from './modules/admin/admin.module'
@@ -13,11 +16,16 @@ import { AuditModule } from './modules/audit/audit.module'
 import { ReportsModule } from './modules/reports/reports.module'
 import { HealthModule } from './health/health.module'
 
+const environmentFile = shouldLoadWorkspaceEnvironmentFile()
+  ? resolveWorkspaceEnvironmentFile(__dirname)
+  : undefined
+
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: resolveWorkspaceEnvironmentFile(__dirname),
+      ignoreEnvFile: environmentFile === undefined,
+      envFilePath: environmentFile,
       validate: validateEnvironment,
     }),
     DatabaseModule,

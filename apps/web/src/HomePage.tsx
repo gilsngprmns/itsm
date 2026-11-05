@@ -11,7 +11,6 @@ export function HomePage() {
   return (
     <main className="home-page">
       <section className="home-hero">
-        <div aria-hidden="true" className="home-hero-glow" />
         <div className="home-hero-content">
           <div className="home-hero-center">
             <h1>IT Asset Management</h1>

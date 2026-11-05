@@ -1,5 +1,13 @@
 import type { ReactNode } from 'react'
 
+export function LoadingState({ message }: { message: string }) {
+  return (
+    <p className="loading-state" role="status">
+      {message}
+    </p>
+  )
+}
+
 export function EmptyState({
   message,
   action,

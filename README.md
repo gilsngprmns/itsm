@@ -26,8 +26,12 @@ pnpm.cmd dev
 ```
 
 `pnpm.cmd dev` starts the frontend at <http://localhost:5173> and the API at
-<http://localhost:3000>. The API health endpoint is
-<http://localhost:3000/api/v1/health>. The frontend reads
+<http://localhost:3000>. Both servers listen on network interfaces, so devices
+on the same Wi-Fi can open <http://70.70.170.73:5173> while this computer is
+running the app. Windows Firewall may prompt to allow Node.js on private
+networks; if it blocks access, allow the `node.exe` application for the private
+profile. The API health endpoint is <http://localhost:3000/api/v1/health>.
+The frontend reads
 `VITE_API_BASE_URL` from the root `.env` at build/start time; this is a public
 browser URL, not a secret. Vite exposes all variables with the `VITE_` prefix
 to browser code. `DATABASE_URL`, session configuration, and database

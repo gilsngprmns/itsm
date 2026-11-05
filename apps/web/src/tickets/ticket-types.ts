@@ -56,6 +56,14 @@ export interface TicketComment {
   createdAt: string
 }
 
+export interface TicketAttachment {
+  id: string
+  originalFilename: string
+  mimeType: string
+  fileSizeBytes: number
+  createdAt: string
+}
+
 export interface TicketHistory {
   statuses: Array<{
     previousStatus: string | null

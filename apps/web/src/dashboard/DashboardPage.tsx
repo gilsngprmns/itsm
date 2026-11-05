@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
-import { EmptyState, ErrorBanner } from '../common/Feedback'
+import { EmptyState, ErrorBanner, LoadingState } from '../common/Feedback'
 import { StatusBadge, statusLabel } from '../common/StatusBadge'
 import { formatDateTimeFull } from '../common/format'
 import { PageHeader } from '../common/PageHeader'
@@ -38,7 +38,7 @@ function requestError(error: unknown): string {
 
 export function DashboardPage() {
   const { user } = useAuth()
-  const role = dashboardRole(user?.roles)
+  const role = dashboardRole(user?.roles, user?.permissions)
 
   if (role === 'ADMIN' || role === 'AUDIT') {
     return <OperationsDashboard role={role} />
@@ -48,25 +48,52 @@ export function DashboardPage() {
 }
 
 function SupportDashboard() {
+  const { user } = useAuth()
+  const canReadTickets = user?.permissions.includes('tickets.read.all') ?? false
   const [tickets, setTickets] = useState<Ticket[]>([])
+  const [ticketTotal, setTicketTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const requestSequence = useRef(0)
   const load = useCallback(async () => {
+    const requestId = ++requestSequence.current
+    setLoading(true)
+    setError(null)
+    if (!canReadTickets) {
+      setTickets([])
+      setTicketTotal(0)
+      setError(
+        'Your account does not have permission to view this information.',
+      )
+      setLoading(false)
+      return
+    }
     try {
       const result = await apiRequest<TicketPage>(
         'tickets?status=OPEN&limit=5&page=1',
       )
+      if (requestId !== requestSequence.current) return
       setTickets(result.items)
-      setError(null)
+      setTicketTotal(result.total)
     } catch (cause) {
-      setError(requestError(cause))
+      if (requestId === requestSequence.current) {
+        setTickets([])
+        setTicketTotal(0)
+        setError(requestError(cause))
+      }
     } finally {
-      setLoading(false)
+      if (requestId === requestSequence.current) setLoading(false)
     }
-  }, [])
+  }, [canReadTickets])
   useEffect(() => {
     queueMicrotask(() => void load())
   }, [load])
+  useEffect(
+    () => () => {
+      requestSequence.current += 1
+    },
+    [],
+  )
   useEffect(
     () =>
       onTicketChanged(() => {
@@ -82,12 +109,14 @@ function SupportDashboard() {
         description="Review incoming work and keep service operations moving."
         title="IT support queue"
         actions={
-          <Link
-            className="button-link button-primary"
-            to="/tickets?status=OPEN"
-          >
-            View ticket queue
-          </Link>
+          canReadTickets && (
+            <Link
+              className="button-link button-primary"
+              to="/tickets?status=OPEN"
+            >
+              View ticket queue
+            </Link>
+          )
         }
       />
       {error && (
@@ -99,57 +128,75 @@ function SupportDashboard() {
         </ErrorBanner>
       )}
       {loading ? (
-        <p role="status">Loading the ticket queue…</p>
-      ) : tickets.length === 0 ? (
-        <EmptyState message="There are no open tickets." />
-      ) : (
-        <section
-          className="report-panel"
-          aria-labelledby="support-queue-heading"
-        >
-          <PanelHeading
-            id="support-queue-heading"
-            title="Open tickets"
-            action={<Link to="/tickets?status=OPEN">View all</Link>}
-          />
-          <div className="table-scroll">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th scope="col">Ticket</th>
-                  <th scope="col">Type</th>
-                  <th scope="col">Subject</th>
-                  <th scope="col">Priority</th>
-                  <th scope="col">Assignee</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tickets.map((ticket) => (
-                  <tr key={ticket.id}>
-                    <td>
-                      <Link to={`/tickets/${ticket.id}`}>
-                        {ticket.ticketNumber}
-                      </Link>
-                    </td>
-                    <td>
-                      {ticket.type === 'SERVICE_REQUEST'
-                        ? 'Service request'
-                        : 'Incident'}
-                    </td>
-                    <td>
-                      <Link to={`/tickets/${ticket.id}`}>{ticket.subject}</Link>
-                    </td>
-                    <td>
-                      <StatusBadge value={ticket.priority} />
-                    </td>
-                    <td>{ticket.assignee?.fullName ?? 'Unassigned'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
+        <LoadingState message="Loading the ticket queue…" />
+      ) : canReadTickets ? (
+        <>
+          <section aria-label="Support queue summary" className="metric-grid">
+            <Metric
+              hint="Across the full support queue"
+              label="Open tickets"
+              value={ticketTotal}
+            />
+            <Metric
+              hint="Latest tickets shown below"
+              label="Queue preview"
+              value={tickets.length}
+            />
+          </section>
+          {tickets.length === 0 ? (
+            <EmptyState message="There are no open tickets." />
+          ) : (
+            <section
+              className="report-panel"
+              aria-labelledby="support-queue-heading"
+            >
+              <PanelHeading
+                id="support-queue-heading"
+                title="Open tickets"
+                action={<Link to="/tickets?status=OPEN">View all</Link>}
+              />
+              <div className="table-scroll">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Ticket</th>
+                      <th scope="col">Type</th>
+                      <th scope="col">Subject</th>
+                      <th scope="col">Priority</th>
+                      <th scope="col">Assignee</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tickets.map((ticket) => (
+                      <tr key={ticket.id}>
+                        <td>
+                          <Link to={`/tickets/${ticket.id}`}>
+                            {ticket.ticketNumber}
+                          </Link>
+                        </td>
+                        <td>
+                          {ticket.type === 'SERVICE_REQUEST'
+                            ? 'Service request'
+                            : 'Incident'}
+                        </td>
+                        <td>
+                          <Link to={`/tickets/${ticket.id}`}>
+                            {ticket.subject}
+                          </Link>
+                        </td>
+                        <td>
+                          <StatusBadge value={ticket.priority} />
+                        </td>
+                        <td>{ticket.assignee?.fullName ?? 'Unassigned'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+        </>
+      ) : null}
     </main>
   )
 }
@@ -158,15 +205,21 @@ function OperationsDashboard({ role }: { role: 'ADMIN' | 'AUDIT' }) {
   const { user } = useAuth()
   const canAssign = user?.permissions.includes('tickets.assign') ?? false
   const canUpdateTickets = user?.permissions.includes('tickets.update') ?? false
+  const canReadTickets = user?.permissions.includes('tickets.read.all') ?? false
+  const canViewTickets =
+    canReadTickets || (user?.permissions.includes('tickets.read.own') ?? false)
   const defaults = dateRangeDefaults()
   const [startDate, setStartDate] = useState(defaults.startDate)
   const [endDate, setEndDate] = useState(defaults.endDate)
   const [report, setReport] = useState<OperationalOverview | null>(null)
   const [openTickets, setOpenTickets] = useState<Ticket[]>([])
+  const [ticketTotal, setTicketTotal] = useState(0)
+  const [ticketQueueError, setTicketQueueError] = useState(false)
   const [assignees, setAssignees] = useState<
     Array<{ id: string; fullName: string }>
   >([])
   const [loading, setLoading] = useState(true)
+  const requestSequence = useRef(0)
   const [savingTicketId, setSavingTicketId] = useState<string | null>(null)
   const [statusDrafts, setStatusDrafts] = useState<
     Record<string, TicketStatus>
@@ -175,30 +228,54 @@ function OperationsDashboard({ role }: { role: 'ADMIN' | 'AUDIT' }) {
   const [notice, setNotice] = useState<string | null>(null)
 
   const load = useCallback(async () => {
+    const requestId = ++requestSequence.current
+    setLoading(true)
+    setError(null)
+    setReport(null)
     const params = new URLSearchParams({ startDate, endDate })
     try {
-      const [result, ticketResult, assigneeResult] = await Promise.all([
-        apiRequest<OperationalOverview>(`reports/overview?${params}`),
-        role === 'ADMIN'
-          ? apiRequest<TicketPage>('tickets?status=OPEN&limit=5&page=1')
-          : Promise.resolve(null),
-        role === 'ADMIN' && canAssign
-          ? apiRequest<Array<{ id: string; fullName: string }>>(
-              'tickets/assignees',
-            )
-          : Promise.resolve([]),
-      ])
-      setReport(result)
-      setOpenTickets(ticketResult?.items ?? [])
+      const [reportResult, ticketResult, assigneeResult] =
+        await Promise.allSettled([
+          apiRequest<OperationalOverview>(`reports/overview?${params}`),
+          role === 'ADMIN' && canReadTickets
+            ? apiRequest<TicketPage>('tickets?status=OPEN&limit=5&page=1')
+            : Promise.resolve(null),
+          role === 'ADMIN' && canReadTickets && canAssign
+            ? apiRequest<Array<{ id: string; fullName: string }>>(
+                'tickets/assignees',
+              )
+            : Promise.resolve([]),
+        ])
+      if (requestId !== requestSequence.current) return
+      const failures: string[] = []
+      if (reportResult.status === 'fulfilled') {
+        setReport(reportResult.value)
+      } else {
+        setReport(null)
+        failures.push(requestError(reportResult.reason))
+      }
+      if (ticketResult.status === 'fulfilled') {
+        setTicketQueueError(false)
+        setOpenTickets(ticketResult.value?.items ?? [])
+        setTicketTotal(ticketResult.value?.total ?? 0)
+      } else {
+        setTicketQueueError(true)
+        setOpenTickets([])
+        setTicketTotal(0)
+        failures.push(`Open tickets: ${requestError(ticketResult.reason)}`)
+      }
+      if (assigneeResult.status === 'fulfilled') {
+        setAssignees(assigneeResult.value)
+      } else {
+        setAssignees([])
+        failures.push(`Assignees: ${requestError(assigneeResult.reason)}`)
+      }
       setStatusDrafts({})
-      setAssignees(assigneeResult)
-      setError(null)
-    } catch (cause) {
-      setError(requestError(cause))
+      setError(failures.length ? failures.join(' ') : null)
     } finally {
-      setLoading(false)
+      if (requestId === requestSequence.current) setLoading(false)
     }
-  }, [canAssign, endDate, role, startDate])
+  }, [canAssign, canReadTickets, endDate, role, startDate])
 
   const changeTicketStatus = async (
     ticket: Ticket,
@@ -281,6 +358,12 @@ function OperationsDashboard({ role }: { role: 'ADMIN' | 'AUDIT' }) {
       active = false
     }
   }, [load])
+  useEffect(
+    () => () => {
+      requestSequence.current += 1
+    },
+    [],
+  )
 
   useEffect(
     () =>
@@ -323,9 +406,11 @@ function OperationsDashboard({ role }: { role: 'ADMIN' | 'AUDIT' }) {
         actions={
           role === 'ADMIN' ? (
             <>
-              <Link className="button-link button-primary" to="/tickets">
-                View tickets
-              </Link>
+              {canViewTickets && (
+                <Link className="button-link button-primary" to="/tickets">
+                  View tickets
+                </Link>
+              )}
               {user?.permissions.includes('users.read') && (
                 <Link className="button-link" to="/users">
                   Manage users
@@ -343,11 +428,12 @@ function OperationsDashboard({ role }: { role: 'ADMIN' | 'AUDIT' }) {
                   Master data
                 </Link>
               )}
-              {user?.permissions.includes('assets.create') && (
-                <Link className="button-link" to="/assets">
-                  Asset CSV tools
-                </Link>
-              )}
+              {user?.permissions.includes('assets.create') &&
+                user.permissions.includes('assets.read') && (
+                  <Link className="button-link" to="/assets">
+                    Asset CSV tools
+                  </Link>
+                )}
             </>
           ) : role === 'AUDIT' ? (
             <Link className="button-link" to="/reports">
@@ -382,11 +468,18 @@ function OperationsDashboard({ role }: { role: 'ADMIN' | 'AUDIT' }) {
           {notice}
         </p>
       )}
-      {loading && <p role="status">Loading operational data…</p>}
+      {loading && <LoadingState message="Loading operational data…" />}
       {!loading && report && (
         <>
-          {role === 'ADMIN' && (
+          {(role === 'ADMIN' || role === 'AUDIT') && (
             <section className="metric-grid" aria-label="Operational summary">
+              {role === 'ADMIN' && canReadTickets && (
+                <Metric
+                  hint="Across the full current queue"
+                  label="Open tickets"
+                  value={ticketTotal}
+                />
+              )}
               <Metric
                 hint="Created in the selected period"
                 label="Tickets created"
@@ -404,7 +497,7 @@ function OperationsDashboard({ role }: { role: 'ADMIN' | 'AUDIT' }) {
               />
             </section>
           )}
-          {role === 'ADMIN' && (
+          {role === 'ADMIN' && canReadTickets && (
             <section
               aria-labelledby="open-tickets-heading"
               className="report-section"
@@ -416,7 +509,9 @@ function OperationsDashboard({ role }: { role: 'ADMIN' | 'AUDIT' }) {
                 id="open-tickets-heading"
                 title="Open tickets"
               />
-              {openTickets.length === 0 ? (
+              {ticketQueueError ? (
+                <EmptyState message="The open ticket queue could not be loaded." />
+              ) : openTickets.length === 0 ? (
                 <EmptyState message="No open tickets." />
               ) : (
                 <div className="table-scroll">
@@ -635,36 +730,49 @@ function RequesterDashboard() {
   const [assets, setAssets] = useState<AssetListResult | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const requestSequence = useRef(0)
 
   const load = useCallback(async () => {
-    const requests: Array<Promise<unknown>> = []
-    if (canReadTickets) {
-      requests.push(
-        apiRequest<TicketListResult>(
-          'tickets?limit=5&sortBy=createdAt&sortOrder=desc',
-        ),
-      )
-    }
-    if (canReadAssets) {
-      requests.push(
-        apiRequest<AssetListResult>('assets?limit=5&sort=createdAt&order=desc'),
-      )
-    }
+    const requestId = ++requestSequence.current
+    setLoading(true)
+    setError(null)
     try {
-      let index = 0
-      const ticketResult = canReadTickets
-        ? ((await requests[index++]) as TicketListResult)
-        : null
-      const assetResult = canReadAssets
-        ? ((await requests[index]) as AssetListResult)
-        : null
-      setTickets(ticketResult)
-      setAssets(assetResult)
-      setError(null)
-    } catch (cause) {
-      setError(requestError(cause))
+      const results = await Promise.allSettled([
+        canReadTickets
+          ? apiRequest<TicketListResult>(
+              'tickets?limit=5&sortBy=createdAt&sortOrder=desc',
+            )
+          : Promise.resolve(null),
+        canReadAssets
+          ? apiRequest<AssetListResult>(
+              'assets?limit=5&sort=createdAt&order=desc',
+            )
+          : Promise.resolve(null),
+      ])
+      if (requestId !== requestSequence.current) return
+      const [ticketResult, assetResult] = results
+      const failures: Array<{ name: string; error: unknown }> = []
+      if (ticketResult.status === 'fulfilled') {
+        setTickets(ticketResult.value)
+      } else {
+        setTickets(null)
+        failures.push({ name: 'tickets', error: ticketResult.reason })
+      }
+      if (assetResult.status === 'fulfilled') {
+        setAssets(assetResult.value)
+      } else {
+        setAssets(null)
+        failures.push({ name: 'assets', error: assetResult.reason })
+      }
+      setError(
+        failures.length
+          ? `Could not load your ${failures
+              .map((failure) => failure.name)
+              .join(' and ')}. ${requestError(failures[0].error)}`
+          : null,
+      )
     } finally {
-      setLoading(false)
+      if (requestId === requestSequence.current) setLoading(false)
     }
   }, [canReadAssets, canReadTickets])
 
@@ -677,6 +785,12 @@ function RequesterDashboard() {
       active = false
     }
   }, [load])
+  useEffect(
+    () => () => {
+      requestSequence.current += 1
+    },
+    [],
+  )
 
   useEffect(
     () =>
@@ -691,9 +805,10 @@ function RequesterDashboard() {
     <main className="page management-page dashboard-page">
       <PageHeader
         className="dashboard-heading"
+        description="Track recent requests and the assets currently assigned to you."
         title="My tickets and assets"
         actions={
-          user?.permissions.includes('tickets.create') ? (
+          canReadTickets && user?.permissions.includes('tickets.create') ? (
             <Link className="button-link button-primary" to="/tickets?new=1">
               Create ticket
             </Link>
@@ -708,9 +823,27 @@ function RequesterDashboard() {
           </button>
         </ErrorBanner>
       )}
-      {loading && <p role="status">Loading tickets and assets…</p>}
+      {loading && <LoadingState message="Loading tickets and assets…" />}
       {!loading && (
         <>
+          {(tickets || assets) && (
+            <section aria-label="My workspace summary" className="metric-grid">
+              {tickets && (
+                <Metric
+                  hint="Submitted by you"
+                  label="My tickets"
+                  value={tickets.total}
+                />
+              )}
+              {assets && (
+                <Metric
+                  hint="Currently assigned to you"
+                  label="My assets"
+                  value={assets.total}
+                />
+              )}
+            </section>
+          )}
           {tickets && (
             <section
               className="report-panel"
@@ -724,9 +857,10 @@ function RequesterDashboard() {
               {tickets.items.length === 0 ? (
                 <div className="empty-state">
                   <p>No tickets yet.</p>
-                  {user?.permissions.includes('tickets.create') && (
-                    <Link to="/tickets?new=1">Create ticket</Link>
-                  )}
+                  {canReadTickets &&
+                    user?.permissions.includes('tickets.create') && (
+                      <Link to="/tickets?new=1">Create ticket</Link>
+                    )}
                 </div>
               ) : (
                 <div className="table-scroll">
@@ -815,7 +949,7 @@ function RequesterDashboard() {
               )}
             </section>
           )}
-          {!tickets && !assets && (
+          {!tickets && !assets && !error && (
             <p className="empty-state">
               No tickets or assets are available for this account.
             </p>

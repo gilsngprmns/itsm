@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiRequest, buildApiUrl } from './api'
+import { apiRequest, buildApiUrl, resolveApiBaseUrl } from './api'
 
 describe('API client', () => {
   afterEach(() => {
@@ -12,8 +12,29 @@ describe('API client', () => {
     )
   })
 
+  it('adds the API prefix to an origin and avoids duplicate prefixes', () => {
+    expect(buildApiUrl('/api/v1/health', 'https://api.example.com/')).toBe(
+      'https://api.example.com/api/v1/health',
+    )
+    expect(
+      buildApiUrl(
+        '/api/v1/tickets?status=open',
+        'https://api.example.com/api/v1',
+      ),
+    ).toBe('https://api.example.com/api/v1/tickets?status=open')
+  })
+
   it('uses the same-origin API path by default in development', () => {
     expect(buildApiUrl('/health')).toBe('/api/v1/health')
+  })
+
+  it('uses a configured tunnel API origin in development and keeps tests isolated', () => {
+    const tunnelApi =
+      'https://designers-conclusions-isp-proper.trycloudflare.com'
+    expect(resolveApiBaseUrl('development', tunnelApi)).toBe(tunnelApi)
+    expect(resolveApiBaseUrl('development', '/api/v1')).toBe('/api/v1')
+    expect(resolveApiBaseUrl('production', tunnelApi)).toBe(tunnelApi)
+    expect(resolveApiBaseUrl('test', tunnelApi)).toBe('/api/v1')
   })
 
   it('reports failed HTTP responses without exposing response bodies', async () => {
