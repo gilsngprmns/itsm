@@ -25,6 +25,8 @@ import {
   type TicketPriority,
   type TicketStatus,
 } from './ticket-status'
+import type { TicketAttachmentStorageService } from './ticket-attachment-storage.service'
+import type { UploadedTicketFile } from './ticket-attachment-storage.service'
 
 interface TicketRow {
   id: string
@@ -304,6 +306,309 @@ export class TicketsService {
     return this.get(id, user)
   }
 
+  async createWithAttachments(
+    dto: CreateTicketDto,
+    files: UploadedTicketFile[],
+    storage: TicketAttachmentStorageService,
+    user: AuthenticatedUser,
+    request: Request,
+  ): Promise<TicketResponse> {
+    const subject = dto.subject.trim()
+    const description = dto.description.trim()
+    if (!subject || !description) {
+      throw new BadRequestException('Subject and description are required')
+    }
+
+    const storedKeys: string[] = []
+    try {
+      const id = await this.dataSource.transaction(async (manager) => {
+        await this.assertActiveCategory(manager, dto.categoryId)
+        await this.assertTicketAsset(manager, dto.assetId, user)
+        await this.assertActiveLocation(manager, dto.locationId)
+        const rows = (await manager.query(
+          `INSERT INTO public.tickets
+             (subject, description, requester_id, category_id, asset_id,
+              location_id, priority, type)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING id`,
+          [
+            subject,
+            description,
+            user.id,
+            dto.categoryId,
+            dto.assetId ?? null,
+            dto.locationId ?? null,
+            dto.priority ?? 'MEDIUM',
+            dto.type,
+          ],
+        )) as Array<{ id: string }>
+        const ticketId = rows[0].id
+        await manager.query(
+          `INSERT INTO public.ticket_status_history
+             (ticket_id, previous_status, new_status, changed_by, reason)
+           VALUES ($1, NULL, 'OPEN', $2, 'Ticket created')`,
+          [ticketId, user.id],
+        )
+        for (const file of files) {
+          const stored = await storage.store(ticketId, file)
+          storedKeys.push(stored.storageKey)
+          await manager.query(
+            `INSERT INTO public.ticket_attachments
+               (ticket_id, uploaded_by, original_filename, storage_key,
+                mime_type, file_size_bytes, checksum_sha256)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              ticketId,
+              user.id,
+              Array.from(file.originalname)
+                .filter((character) => {
+                  const code = character.charCodeAt(0)
+                  return code >= 32 && code !== 127
+                })
+                .join('')
+                .slice(0, 255),
+              stored.storageKey,
+              file.mimetype,
+              stored.fileSizeBytes,
+              stored.checksumSha256,
+            ],
+          )
+        }
+        await writeAuditLog(
+          manager,
+          request,
+          user.id,
+          'tickets.created',
+          'ticket',
+          ticketId,
+          null,
+          {
+            subject,
+            priority: dto.priority ?? 'MEDIUM',
+            attachmentCount: files.length,
+          },
+        )
+        return ticketId
+      })
+      return this.get(id, user)
+    } catch (error) {
+      await Promise.all(storedKeys.map((storageKey) => storage.remove(storageKey)))
+      throw error
+    }
+  }
+
+  async uploadAttachments(
+    id: string,
+    files: UploadedTicketFile[],
+    storage: TicketAttachmentStorageService,
+    user: AuthenticatedUser,
+  ): Promise<
+    Array<{
+      id: string
+      originalFilename: string
+      mimeType: string
+      fileSizeBytes: number
+      createdAt: Date
+    }>
+  > {
+    const ticket = await this.getTicket(this.dataSource.manager, id)
+    assertCanReadTicket(ticket, user)
+    const canUpload =
+      user.permissions.includes('tickets.attachments.upload') ||
+      user.permissions.includes('tickets.create')
+    if (!canUpload) {
+      throw new ForbiddenException('Ticket attachment upload is not allowed')
+    }
+    if (
+      !user.permissions.includes('tickets.read.all') &&
+      ticket.requester_id !== user.id
+    ) {
+      throw new NotFoundException('Ticket not found')
+    }
+
+    const stored: Array<{
+      storageKey: string
+      checksumSha256: string
+      fileSizeBytes: number
+      originalFilename: string
+      mimeType: string
+    }> = []
+    try {
+      for (const file of files) {
+        const result = await storage.store(id, file)
+        stored.push({
+          ...result,
+          originalFilename: Array.from(file.originalname)
+            .filter((character) => {
+              const code = character.charCodeAt(0)
+              return code >= 32 && code !== 127
+            })
+            .join('')
+            .slice(0, 255),
+          mimeType: file.mimetype,
+        })
+      }
+      const rows = await this.dataSource.transaction(async (manager) => {
+        const inserted: Array<{
+          id: string
+          original_filename: string
+          mime_type: string
+          file_size_bytes: string
+          created_at: Date
+        }> = []
+        for (const item of stored) {
+          const result = (await manager.query(
+            `INSERT INTO public.ticket_attachments
+               (ticket_id, uploaded_by, original_filename, storage_key,
+                mime_type, file_size_bytes, checksum_sha256)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING id, original_filename, mime_type, file_size_bytes, created_at`,
+            [
+              id,
+              user.id,
+              item.originalFilename,
+              item.storageKey,
+              item.mimeType,
+              item.fileSizeBytes,
+              item.checksumSha256,
+            ],
+          )) as Array<{
+            id: string
+            original_filename: string
+            mime_type: string
+            file_size_bytes: string
+            created_at: Date
+          }>
+          inserted.push(result[0])
+        }
+        return inserted
+      })
+      return rows.map((row) => ({
+        id: row.id,
+        originalFilename: row.original_filename,
+        mimeType: row.mime_type,
+        fileSizeBytes: Number(row.file_size_bytes),
+        createdAt: row.created_at,
+      }))
+    } catch (error) {
+      await Promise.all(
+        stored.map((item) => storage.remove(item.storageKey)),
+      )
+      throw error
+    }
+  }
+
+  async listAttachments(
+    id: string,
+    user: AuthenticatedUser,
+  ): Promise<
+    Array<{
+      id: string
+      originalFilename: string
+      mimeType: string
+      fileSizeBytes: number
+      createdAt: Date
+    }>
+  > {
+    const ticket = await this.getTicket(this.dataSource.manager, id)
+    assertCanReadTicket(ticket, user)
+    const rows = (await this.dataSource.query(
+      `SELECT id, original_filename, mime_type, file_size_bytes, created_at
+       FROM public.ticket_attachments
+       WHERE ticket_id = $1
+       ORDER BY created_at, id`,
+      [id],
+    )) as Array<{
+      id: string
+      original_filename: string
+      mime_type: string
+      file_size_bytes: string
+      created_at: Date
+    }>
+    return rows.map((row) => ({
+      id: row.id,
+      originalFilename: row.original_filename,
+      mimeType: row.mime_type,
+      fileSizeBytes: Number(row.file_size_bytes),
+      createdAt: row.created_at,
+    }))
+  }
+
+  async getAttachment(
+    ticketId: string,
+    attachmentId: string,
+    storage: TicketAttachmentStorageService,
+    user: AuthenticatedUser,
+  ): Promise<{
+    originalFilename: string
+    mimeType: string
+    buffer: Buffer
+  }> {
+    const ticket = await this.getTicket(this.dataSource.manager, ticketId)
+    assertCanReadTicket(ticket, user)
+    const rows = (await this.dataSource.query(
+      `SELECT original_filename, storage_key, mime_type
+       FROM public.ticket_attachments
+       WHERE id = $1 AND ticket_id = $2
+       LIMIT 1`,
+      [attachmentId, ticketId],
+    )) as Array<{
+      original_filename: string
+      storage_key: string
+      mime_type: string
+    }>
+    if (!rows[0]) throw new NotFoundException('Attachment not found')
+    return {
+      originalFilename: rows[0].original_filename,
+      mimeType: rows[0].mime_type,
+      buffer: await storage.read(rows[0].storage_key),
+    }
+  }
+
+  async deleteAttachment(
+    ticketId: string,
+    attachmentId: string,
+    storage: TicketAttachmentStorageService,
+    user: AuthenticatedUser,
+    request: Request,
+  ): Promise<void> {
+    const ticket = await this.getTicket(this.dataSource.manager, ticketId)
+    assertCanReadTicket(ticket, user)
+    if (!user.permissions.includes('tickets.attachments.delete')) {
+      throw new ForbiddenException('Ticket attachment deletion is not allowed')
+    }
+    const storageKey = await this.dataSource.transaction(async (manager) => {
+      const rows = (await manager.query(
+        `SELECT storage_key, original_filename
+         FROM public.ticket_attachments
+         WHERE id = $1 AND ticket_id = $2
+         LIMIT 1`,
+        [attachmentId, ticketId],
+      )) as Array<{ storage_key: string; original_filename: string }>
+      if (!rows[0]) throw new NotFoundException('Attachment not found')
+      await manager.query(
+        `DELETE FROM public.ticket_attachments
+         WHERE id = $1 AND ticket_id = $2`,
+        [attachmentId, ticketId],
+      )
+      await writeAuditLog(
+        manager,
+        request,
+        user.id,
+        'tickets.attachment_deleted',
+        'ticket_attachment',
+        attachmentId,
+        {
+          ticketId,
+          originalFilename: rows[0].original_filename,
+        },
+        null,
+      )
+      return rows[0].storage_key
+    })
+    await storage.remove(storageKey)
+  }
+
   async update(
     id: string,
     dto: UpdateTicketDto,
@@ -433,6 +738,15 @@ export class TicketsService {
       if (dto.status === 'RESOLVED' && !resolutionSummary) {
         throw new BadRequestException(
           'A resolution summary is required to resolve a ticket',
+        )
+      }
+      if (
+        dto.status === 'RESOLVED' &&
+        resolutionSummary &&
+        resolutionSummary.length < 20
+      ) {
+        throw new BadRequestException(
+          'Resolution documentation must contain at least 20 characters',
         )
       }
       if (dto.status !== 'RESOLVED' && dto.resolutionSummary !== undefined) {

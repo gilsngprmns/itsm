@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Param,
@@ -9,9 +10,13 @@ import {
   Post,
   Query,
   Req,
+  Res,
+  UploadedFiles,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common'
-import type { Request } from 'express'
+import { FilesInterceptor } from '@nestjs/platform-express'
+import type { Request, Response } from 'express'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import {
   RequireAnyPermissions,
@@ -34,16 +39,32 @@ import {
 import { TicketStatusDto } from './dto/ticket-status.dto'
 import { UpdateTicketDto } from './dto/update-ticket.dto'
 import { TicketsService } from './tickets.service'
+import {
+  TicketAttachmentStorageService,
+  type UploadedTicketFile,
+} from './ticket-attachment-storage.service'
 
 @Controller('tickets')
 @UseGuards(SessionGuard, PermissionsGuard)
 export class TicketsController {
-  constructor(private readonly tickets: TicketsService) {}
+  constructor(
+    private readonly tickets: TicketsService,
+    private readonly attachments: TicketAttachmentStorageService,
+  ) {}
 
   @Get()
   @RequireAnyPermissions('tickets.read.all', 'tickets.read.own')
   list(@Query() query: ListTicketsDto, @CurrentUser() user: AuthenticatedUser) {
     return this.tickets.list(query, user)
+  }
+
+  @Get('attachment-config')
+  @RequireAnyPermissions(
+    'tickets.attachments.upload',
+    'tickets.create',
+  )
+  attachmentConfig() {
+    return this.attachments.getConfiguration()
   }
 
   @Get('linkable-assets')
@@ -57,13 +78,105 @@ export class TicketsController {
 
   @Post()
   @UseGuards(OriginGuard)
+  @UseInterceptors(FilesInterceptor('files'))
   @RequirePermissions('tickets.create')
   create(
     @Body() body: CreateTicketDto,
     @CurrentUser() user: AuthenticatedUser,
     @Req() request: Request,
+    @UploadedFiles() files: UploadedTicketFile[] | undefined,
   ) {
+    if (files?.length) {
+      return this.tickets.createWithAttachments(
+        body,
+        this.attachments.validate(files),
+        this.attachments,
+        user,
+        request,
+      )
+    }
     return this.tickets.create(body, user, request)
+  }
+
+  @Post(':id/attachments')
+  @UseGuards(OriginGuard)
+  @UseInterceptors(FilesInterceptor('files'))
+  @RequireAnyPermissions(
+    'tickets.attachments.upload',
+    'tickets.create',
+  )
+  uploadAttachments(
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFiles() files: UploadedTicketFile[] | undefined,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.tickets.uploadAttachments(
+      id,
+      this.attachments.validate(files),
+      this.attachments,
+      user,
+    )
+  }
+
+  @Delete(':id/attachments/:attachmentId')
+  @UseGuards(OriginGuard)
+  @RequirePermissions('tickets.attachments.delete')
+  deleteAttachment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('attachmentId', ParseUUIDPipe) attachmentId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Req() request: Request,
+  ) {
+    return this.tickets.deleteAttachment(
+      id,
+      attachmentId,
+      this.attachments,
+      user,
+      request,
+    )
+  }
+
+  @Get(':id/attachments')
+  @RequireAnyPermissions(
+    'tickets.attachments.view',
+    'tickets.read.all',
+    'tickets.read.own',
+  )
+  listAttachments(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.tickets.listAttachments(id, user)
+  }
+
+  @Get(':id/attachments/:attachmentId')
+  @RequireAnyPermissions(
+    'tickets.attachments.view',
+    'tickets.read.all',
+    'tickets.read.own',
+  )
+  async downloadAttachment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('attachmentId', ParseUUIDPipe) attachmentId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Res() response: Response,
+  ) {
+    const attachment = await this.tickets.getAttachment(
+      id,
+      attachmentId,
+      this.attachments,
+      user,
+    )
+    response.setHeader('Content-Type', attachment.mimeType)
+    response.setHeader(
+      'Content-Disposition',
+      `inline; filename="${attachment.originalFilename
+        .replace(/["\\]/g, '_')
+        .replaceAll('\r', '_')
+        .replaceAll('\n', '_')}"`,
+    )
+    response.setHeader('Cache-Control', 'private, no-store')
+    response.send(attachment.buffer)
   }
 
   @Get('assignees')

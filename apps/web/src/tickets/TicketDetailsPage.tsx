@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { formatDateTime, formatDateTimeFull } from '../common/format'
 import { StatusBadge, statusLabel } from '../common/StatusBadge'
-import { apiRequest } from '../lib/api'
+import { apiRequest, buildApiUrl } from '../lib/api'
 import { ticketErrorMessage } from './ticket-errors'
 import { announceTicketChanged, onTicketChanged } from './ticket-events'
 import {
@@ -14,6 +14,7 @@ import {
   type TicketCategory,
   type TicketHistory,
   type TicketStatus,
+  type TicketAttachment,
 } from './ticket-types'
 
 interface Assignee {
@@ -33,13 +34,19 @@ export function TicketDetailsPage() {
     user?.permissions.includes('tickets.self_assign') ?? false
   const canAssign = user?.permissions.includes('tickets.assign') ?? false
   const canComment = user?.permissions.includes('tickets.comment') ?? false
+  const canDeleteAttachments =
+    user?.permissions.includes('tickets.attachments.delete') ?? false
   const [ticket, setTicket] = useState<Ticket | null>(null)
   const [categories, setCategories] = useState<TicketCategory[]>([])
   const [comments, setComments] = useState<TicketComment[]>([])
   const [history, setHistory] = useState<TicketHistory | null>(null)
+  const [attachments, setAttachments] = useState<TicketAttachment[]>([])
   const [assignees, setAssignees] = useState<Assignee[]>([])
   const [nextStatus, setNextStatus] = useState<TicketStatus | ''>('')
-  const [resolutionSummary, setResolutionSummary] = useState('')
+  const [resolutionProblem, setResolutionProblem] = useState('')
+  const [resolutionCause, setResolutionCause] = useState('')
+  const [resolutionActions, setResolutionActions] = useState('')
+  const [resolutionPrevention, setResolutionPrevention] = useState('')
   const [statusReason, setStatusReason] = useState('')
   const [assignmentReason, setAssignmentReason] = useState('')
   const [assigneeId, setAssigneeId] = useState('')
@@ -52,16 +59,20 @@ export function TicketDetailsPage() {
   const [isInternal, setIsInternal] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [deletingAttachmentId, setDeletingAttachmentId] = useState<string | null>(
+    null,
+  )
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
   const loadTicket = useCallback(async () => {
     if (!id) return
     try {
-      const [ticketResult, commentResult, historyResult] = await Promise.all([
+      const [ticketResult, commentResult, historyResult, attachmentResult] = await Promise.all([
         apiRequest<Ticket>(`tickets/${id}`),
         apiRequest<TicketComment[]>(`tickets/${id}/comments`),
         apiRequest<TicketHistory>(`tickets/${id}/history`),
+        apiRequest<TicketAttachment[]>(`tickets/${id}/attachments`),
       ])
       setTicket(ticketResult)
       setEditSubject(ticketResult.subject)
@@ -71,6 +82,7 @@ export function TicketDetailsPage() {
       setEditType(ticketResult.type)
       setComments(commentResult)
       setHistory(historyResult)
+      setAttachments(attachmentResult)
       setAssigneeId(ticketResult.assignee?.id ?? '')
       if (canUpdate) {
         setCategories(await apiRequest<TicketCategory[]>('ticket-categories'))
@@ -121,6 +133,29 @@ export function TicketDetailsPage() {
     }
   }, [canAssign])
 
+  const deleteAttachment = async (attachment: TicketAttachment) => {
+    if (!id) return
+    if (!window.confirm(`Delete "${attachment.originalFilename}"?`)) return
+    setDeletingAttachmentId(attachment.id)
+    setError(null)
+    setNotice(null)
+    try {
+      await apiRequest<unknown>(
+        `tickets/${id}/attachments/${attachment.id}`,
+        { method: 'DELETE' },
+      )
+      setAttachments((current) =>
+        current.filter((item) => item.id !== attachment.id),
+      )
+      setNotice('Attachment deleted.')
+      announceTicketChanged(id)
+    } catch (cause) {
+      setError(ticketErrorMessage(cause, 'delete attachment'))
+    } finally {
+      setDeletingAttachmentId(null)
+    }
+  }
+
   const changeStatus = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!id || !nextStatus || !ticket) return
@@ -134,6 +169,14 @@ export function TicketDetailsPage() {
     setError(null)
     setNotice(null)
     try {
+      const resolutionSummary = nextStatus === 'RESOLVED'
+        ? [
+            `Problem: ${resolutionProblem.trim()}`,
+            `Root cause: ${resolutionCause.trim()}`,
+            `Resolution actions: ${resolutionActions.trim()}`,
+            `Prevention/follow-up: ${resolutionPrevention.trim()}`,
+          ].join('\n')
+        : ''
       await apiRequest<Ticket>(`tickets/${id}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -146,7 +189,10 @@ export function TicketDetailsPage() {
         }),
       })
       setNextStatus('')
-      setResolutionSummary('')
+      setResolutionProblem('')
+      setResolutionCause('')
+      setResolutionActions('')
+      setResolutionPrevention('')
       setStatusReason('')
       setNotice(`Ticket updated to ${statusLabel(nextStatus)}.`)
       announceTicketChanged(id)
@@ -397,6 +443,45 @@ export function TicketDetailsPage() {
         </dl>
       </section>
 
+      <section className="detail-panel" aria-labelledby="ticket-attachments-heading">
+        <h2 id="ticket-attachments-heading">Attachments</h2>
+        {attachments.length === 0 ? (
+          <p className="muted-text">No attachments.</p>
+        ) : (
+          <ul className="attachment-list">
+            {attachments.map((attachment) => (
+              <li key={attachment.id}>
+                <a
+                  href={buildApiUrl(
+                    `tickets/${ticket.id}/attachments/${attachment.id}`,
+                  )}
+                  target="_blank"
+                  rel="noopener"
+                >
+                  {attachment.originalFilename}
+                </a>
+                <span>
+                  {attachment.mimeType} ·{' '}
+                  {Math.max(1, Math.ceil(attachment.fileSizeBytes / 1024))} KB
+                </span>
+                {canDeleteAttachments && (
+                  <button
+                    type="button"
+                    className="text-button attachment-delete-button"
+                    disabled={deletingAttachmentId === attachment.id}
+                    onClick={() => void deleteAttachment(attachment)}
+                  >
+                    {deletingAttachmentId === attachment.id
+                      ? 'Deleting…'
+                      : 'Delete'}
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       {canEditDetails &&
         ticket.status !== 'CLOSED' &&
         ticket.status !== 'CANCELLED' && (
@@ -502,15 +587,50 @@ export function TicketDetailsPage() {
               </select>
             </label>
             {nextStatus === 'RESOLVED' && (
-              <label className="field-wide">
-                Resolution summary
-                <textarea
-                  required
-                  maxLength={4000}
-                  value={resolutionSummary}
-                  onChange={(event) => setResolutionSummary(event.target.value)}
-                />
-              </label>
+              <>
+                <label className="field-wide">
+                  Problem observed
+                  <textarea
+                    required
+                    maxLength={1000}
+                    value={resolutionProblem}
+                    onChange={(event) =>
+                      setResolutionProblem(event.target.value)
+                    }
+                  />
+                </label>
+                <label className="field-wide">
+                  Root cause
+                  <textarea
+                    required
+                    maxLength={1000}
+                    value={resolutionCause}
+                    onChange={(event) => setResolutionCause(event.target.value)}
+                  />
+                </label>
+                <label className="field-wide">
+                  Resolution actions
+                  <textarea
+                    required
+                    maxLength={1200}
+                    value={resolutionActions}
+                    onChange={(event) =>
+                      setResolutionActions(event.target.value)
+                    }
+                  />
+                </label>
+                <label className="field-wide">
+                  Prevention or follow-up
+                  <textarea
+                    required
+                    maxLength={1000}
+                    value={resolutionPrevention}
+                    onChange={(event) =>
+                      setResolutionPrevention(event.target.value)
+                    }
+                  />
+                </label>
+              </>
             )}
             <label className="field-wide">
               Reason (optional)

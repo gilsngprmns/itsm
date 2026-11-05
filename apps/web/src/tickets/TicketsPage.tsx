@@ -32,12 +32,28 @@ interface LocationOption {
   name: string
 }
 
+interface AttachmentConfiguration {
+  maxFileSizeBytes: number
+  maxFiles: number
+  allowedMimeTypes: string[]
+}
+
+function formatAttachmentLimit(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${Math.floor(bytes / (1024 * 1024))} MB`
+  }
+  return `${Math.floor(bytes / 1024)} KB`
+}
+
 const priorities = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const
 
 export function TicketsPage() {
   const { user } = useAuth()
   const [searchParams] = useSearchParams()
   const canCreate = user?.permissions.includes('tickets.create') ?? false
+  const canUploadAttachments =
+    canCreate ||
+    (user?.permissions.includes('tickets.attachments.upload') ?? false)
   const canReadAssets = user?.permissions.includes('assets.read') ?? false
   const canManageCategories =
     user?.permissions.includes('tickets.update') ?? false
@@ -87,6 +103,9 @@ export function TicketsPage() {
   const [newType, setNewType] =
     useState<(typeof TICKET_TYPES)[number]>('INCIDENT')
   const [locationId, setLocationId] = useState('')
+  const [selectedAttachments, setSelectedAttachments] = useState<File[]>([])
+  const [attachmentConfiguration, setAttachmentConfiguration] =
+    useState<AttachmentConfiguration | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const pageCount = Math.max(1, Math.ceil(total / 25))
@@ -155,6 +174,22 @@ export function TicketsPage() {
   }, [canCreate, assetPage, assetSearch])
 
   useEffect(() => {
+    if (!canUploadAttachments) return
+    let active = true
+    void apiRequest<AttachmentConfiguration>('tickets/attachment-config')
+      .then((configuration) => {
+        if (active) setAttachmentConfiguration(configuration)
+      })
+      .catch((cause: unknown) => {
+        if (active)
+          setError(ticketErrorMessage(cause, 'load attachment configuration'))
+      })
+    return () => {
+      active = false
+    }
+  }, [canUploadAttachments])
+
+  useEffect(() => {
     if (!canAssign) return
     let active = true
     void apiRequest<Array<{ id: string; fullName: string }>>(
@@ -215,18 +250,20 @@ export function TicketsPage() {
     setError(null)
     setNotice(null)
     try {
+      const form = new FormData()
+      form.append('subject', subject)
+      form.append('description', description)
+      form.append('categoryId', categoryId)
+      form.append('type', newType)
+      form.append('priority', newPriority)
+      if (assetId) form.append('assetId', assetId)
+      if (locationId) form.append('locationId', locationId)
+      if (selectedAttachments.length > 0) {
+        selectedAttachments.forEach((file) => form.append('files', file))
+      }
       const created = await apiRequest<Ticket>('tickets', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          subject,
-          description,
-          categoryId,
-          type: newType,
-          priority: newPriority,
-          ...(assetId ? { assetId } : {}),
-          ...(locationId ? { locationId } : {}),
-        }),
+        body: form,
       })
       setSubject('')
       setDescription('')
@@ -235,6 +272,7 @@ export function TicketsPage() {
       setNewType('INCIDENT')
       setAssetId('')
       setLocationId('')
+      setSelectedAttachments([])
       setShowCreate(false)
       setPage(1)
       setSearch('')
@@ -502,6 +540,80 @@ export function TicketsPage() {
                 onChange={(event) => setDescription(event.target.value)}
               />
             </label>
+            <div className="field-wide attachment-picker">
+              <label htmlFor="ticket-attachments">
+                Attachments (optional)
+              </label>
+              <input
+                id="ticket-attachments"
+                type="file"
+                accept={attachmentConfiguration ? [
+                  ...attachmentConfiguration.allowedMimeTypes,
+                  '.jpg',
+                  '.jpeg',
+                  '.png',
+                  '.webp',
+                ].join(',') : undefined}
+                disabled={!attachmentConfiguration}
+                multiple
+                onChange={(event) => {
+                  const files = Array.from(event.target.files ?? [])
+                  if (!attachmentConfiguration) return
+                  const invalid = files.find(
+                    (file) =>
+                      !attachmentConfiguration.allowedMimeTypes.includes(file.type) ||
+                      file.size > attachmentConfiguration.maxFileSizeBytes,
+                  )
+                  if (invalid) {
+                    setError(
+                      `Use ${attachmentConfiguration.allowedMimeTypes
+                        .map((type) => type.replace('image/', '').toUpperCase())
+                        .join(', ')} images no larger than ${formatAttachmentLimit(
+                        attachmentConfiguration.maxFileSizeBytes,
+                      )}.`,
+                    )
+                    event.target.value = ''
+                    return
+                  }
+                  if (files.length > attachmentConfiguration.maxFiles) {
+                    setError(
+                      `A maximum of ${attachmentConfiguration.maxFiles} attachments is allowed.`,
+                    )
+                    event.target.value = ''
+                    return
+                  }
+                  setError(null)
+                  setSelectedAttachments(files)
+                }}
+              />
+              <p className="field-help">
+                {attachmentConfiguration
+                  ? `Up to ${attachmentConfiguration.maxFiles} files, maximum ${formatAttachmentLimit(
+                      attachmentConfiguration.maxFileSizeBytes,
+                    )} each.`
+                  : 'Attachment configuration loading…'}
+              </p>
+              {selectedAttachments.length > 0 && (
+                <ul className="selected-attachments" aria-label="Selected files">
+                  {selectedAttachments.map((file, index) => (
+                    <li key={`${file.name}-${file.lastModified}-${index}`}>
+                      <span>{file.name}</span>
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() =>
+                          setSelectedAttachments((current) =>
+                            current.filter((_, itemIndex) => itemIndex !== index),
+                          )
+                        }
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
             <div className="field-wide">
               <button
                 type="submit"

@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path'
 
 export function resolveWorkspaceEnvironmentFile(
   startDirectory: string,
-): string {
+): string | undefined {
   let directory = resolve(startDirectory)
 
   while (true) {
@@ -13,8 +13,20 @@ export function resolveWorkspaceEnvironmentFile(
 
     const parent = dirname(directory)
     if (parent === directory) {
-      throw new Error('Unable to locate the pnpm workspace root')
+      return undefined
     }
     directory = parent
   }
+}
+
+export function isVercelRuntime(
+  environment: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return environment.VERCEL === '1' || environment.VERCEL_ENV !== undefined
+}
+
+export function shouldLoadWorkspaceEnvironmentFile(
+  environment: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return environment.NODE_ENV !== 'production' && !isVercelRuntime(environment)
 }

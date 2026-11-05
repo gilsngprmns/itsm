@@ -10,6 +10,7 @@ import { HomePage } from './HomePage'
 import { loginFailureMessage, postLoginPath } from './auth/login-utils'
 import { ApiRequestError } from './lib/api'
 import { dashboardRole } from './dashboard/dashboard-role'
+import { DashboardPage } from './dashboard/DashboardPage'
 import { STATUS_TRANSITIONS } from './tickets/ticket-types'
 import { AssetCsvTools } from './assets/AssetCsvTools'
 import { MasterDataPage } from './master-data/MasterDataPage'
@@ -39,7 +40,7 @@ describe('login form', () => {
     expect(markup).toContain('aria-label="Show password"')
     expect(markup).toContain('Login')
     expect(markup).toContain('IT Asset Management')
-    expect(markup).toContain('login-visual')
+    expect(markup).toContain('login-brand')
     expect(markup).toContain('login-panel')
     expect(markup).toContain('login-shell')
     expect(markup).not.toContain('IT OPERATIONS WORKSPACE')
@@ -181,7 +182,14 @@ describe('authenticated application shell', () => {
         fullName: 'Admin',
         email: 'admin@example.test',
         roles: ['ADMIN'],
-        permissions: ['assets.read', 'users.read', 'tickets.read.all'],
+        permissions: [
+          'assets.read',
+          'assets.update',
+          'users.read',
+          'users.update',
+          'tickets.read.all',
+          'tickets.update',
+        ],
       },
       error: null,
       refresh: vi.fn(),
@@ -202,7 +210,7 @@ describe('authenticated application shell', () => {
     expect(markup).toContain('>Dashboard</a>')
     expect(markup).toContain('>Tickets</a>')
     expect(markup).toContain('>Master data</a>')
-    expect(markup).not.toContain('>Ticket categories</a>')
+    expect(markup).toContain('>Ticket categories</a>')
   })
 })
 
@@ -239,6 +247,93 @@ describe('role based dashboards', () => {
     expect(dashboardRole(['ADMIN', 'USER'])).toBe('ADMIN')
     expect(dashboardRole(['AUDIT'])).toBe('AUDIT')
     expect(dashboardRole(['USER'])).toBe('USER')
+  })
+
+  it('renders distinct dashboard entry points for support and requesters', () => {
+    vi.mocked(useAuth).mockReturnValue({
+      status: 'authenticated',
+      user: {
+        id: 'support-id',
+        fullName: 'Support Agent',
+        email: 'support@example.test',
+        roles: ['IT_SUPPORT'],
+        permissions: ['tickets.read.all'],
+      },
+      error: null,
+      refresh: vi.fn(),
+      signIn: vi.fn(),
+      signOut: vi.fn(),
+    })
+    const supportMarkup = renderToStaticMarkup(
+      createElement(MemoryRouter, null, createElement(DashboardPage)),
+    )
+    expect(supportMarkup).toContain('IT support queue')
+    expect(supportMarkup).toContain('View ticket queue')
+
+    vi.mocked(useAuth).mockReturnValue({
+      status: 'authenticated',
+      user: {
+        id: 'requester-id',
+        fullName: 'Requester',
+        email: 'requester@example.test',
+        roles: ['USER'],
+        permissions: ['tickets.read.own', 'tickets.create', 'assets.read'],
+      },
+      error: null,
+      refresh: vi.fn(),
+      signIn: vi.fn(),
+      signOut: vi.fn(),
+    })
+    const requesterMarkup = renderToStaticMarkup(
+      createElement(MemoryRouter, null, createElement(DashboardPage)),
+    )
+    expect(requesterMarkup).toContain('My tickets and assets')
+    expect(requesterMarkup).toContain('Track recent requests')
+    expect(requesterMarkup).toContain('Create ticket')
+
+    vi.mocked(useAuth).mockReturnValue({
+      status: 'authenticated',
+      user: {
+        id: 'create-only-id',
+        fullName: 'Create Only',
+        email: 'create-only@example.test',
+        roles: ['USER'],
+        permissions: ['tickets.create'],
+      },
+      error: null,
+      refresh: vi.fn(),
+      signIn: vi.fn(),
+      signOut: vi.fn(),
+    })
+    const createOnlyMarkup = renderToStaticMarkup(
+      createElement(MemoryRouter, null, createElement(DashboardPage)),
+    )
+    expect(createOnlyMarkup).not.toContain('Create ticket')
+  })
+
+  it('does not expose ticket navigation on an admin dashboard without ticket-read permission', () => {
+    vi.mocked(useAuth).mockReturnValue({
+      status: 'authenticated',
+      user: {
+        id: 'limited-admin-id',
+        fullName: 'Limited Admin',
+        email: 'admin@example.test',
+        roles: ['ADMIN'],
+        permissions: ['reports.read', 'assets.create'],
+      },
+      error: null,
+      refresh: vi.fn(),
+      signIn: vi.fn(),
+      signOut: vi.fn(),
+    })
+    const markup = renderToStaticMarkup(
+      createElement(MemoryRouter, null, createElement(DashboardPage)),
+    )
+
+    expect(markup).toContain('Operations overview')
+    expect(markup).not.toContain('View tickets')
+    expect(markup).not.toContain('Asset CSV tools')
+    expect(markup).not.toContain('open-tickets-heading')
   })
 })
 

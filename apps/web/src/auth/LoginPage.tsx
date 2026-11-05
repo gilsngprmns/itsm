@@ -47,79 +47,10 @@ export function LoginPage() {
     <main className="login-page">
       <div className="login-shell">
         <section aria-labelledby="login-heading" className="login-card">
-          <aside className="login-visual">
-            <div aria-hidden="true" className="login-visual-wave" />
-            <Link className="login-visual-title" to="/">
+          <div className="login-panel">
+            <Link className="login-brand" to="/">
               IT Asset Management
             </Link>
-            <div aria-hidden="true" className="login-illustration">
-              <div className="login-illustration-orbit login-orbit-one" />
-              <div className="login-illustration-orbit login-orbit-two" />
-              <div className="login-device">
-                <div className="login-device-top">
-                  <span />
-                  <span />
-                  <span />
-                </div>
-                <div className="login-device-screen">
-                  <div className="login-device-sidebar">
-                    <i />
-                    <i />
-                    <i />
-                    <i />
-                  </div>
-                  <div className="login-device-content">
-                    <span className="login-device-caption" />
-                    <span className="login-device-heading" />
-                    <div className="login-device-metrics">
-                      <i />
-                      <i />
-                      <i />
-                    </div>
-                    <div className="login-device-list">
-                      <i />
-                      <i />
-                      <i />
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div className="login-asset-float login-asset-laptop">
-                <span className="login-asset-icon">▱</span>
-                <span>
-                  <i />
-                  <i />
-                </span>
-                <b>✓</b>
-              </div>
-              <div className="login-asset-float login-asset-ticket">
-                <span className="login-ticket-icon">↗</span>
-                <span>
-                  <i />
-                  <i />
-                </span>
-                <b />
-              </div>
-              <div className="login-plant login-plant-left">
-                <i />
-                <i />
-                <i />
-              </div>
-              <div className="login-plant login-plant-right">
-                <i />
-                <i />
-                <i />
-              </div>
-            </div>
-            <div aria-hidden="true" className="login-visual-foot">
-              <span>ASSETS</span>
-              <i />
-              <span>SERVICE</span>
-              <i />
-              <span>TEAM</span>
-            </div>
-          </aside>
-          <div className="login-panel">
             <div className="login-heading">
               <h1 id="login-heading">Login</h1>
               <p>Sign in with your work account to continue.</p>

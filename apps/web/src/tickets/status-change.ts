@@ -16,16 +16,34 @@ export function requestTicketStatusChangeDetails(
 
   if (status !== 'RESOLVED') return {}
 
-  const resolutionSummary = window.prompt(
-    'Enter a summary of how this ticket was solved.',
+  const problem = window.prompt('What problem was observed or reported?')
+  if (problem === null) return null
+  const cause = window.prompt('What was the identified root cause?')
+  if (cause === null) return null
+  const actions = window.prompt('What actions were performed to solve it?')
+  if (actions === null) return null
+  const prevention = window.prompt(
+    'What prevention or follow-up action is recommended?',
   )
-  if (resolutionSummary === null) return null
-  if (!resolutionSummary.trim()) {
+  if (prevention === null) return null
+  if (
+    !problem.trim() ||
+    !cause.trim() ||
+    !actions.trim() ||
+    !prevention.trim()
+  ) {
     window.alert(
-      'A solution summary is required to mark this ticket as solved.',
+      'Problem, root cause, resolution actions, and prevention are required.',
     )
     return null
   }
 
-  return { resolutionSummary: resolutionSummary.trim() }
+  return {
+    resolutionSummary: [
+      `Problem: ${problem.trim()}`,
+      `Root cause: ${cause.trim()}`,
+      `Resolution actions: ${actions.trim()}`,
+      `Prevention/follow-up: ${prevention.trim()}`,
+    ].join('\n'),
+  }
 }

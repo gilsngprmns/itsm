@@ -8,6 +8,9 @@ export interface ValidatedEnvironment extends Environment {
   PUBLIC_WEB_URL?: string
   SESSION_COOKIE_NAME: string
   AUTH_SESSION_TTL_MINUTES: number
+  TICKET_ATTACHMENT_MAX_FILE_BYTES: number
+  TICKET_ATTACHMENT_MAX_FILES: number
+  TICKET_ATTACHMENT_STORAGE_DIR: string
 }
 
 export function validateEnvironment(
@@ -44,6 +47,30 @@ export function validateEnvironment(
       'AUTH_SESSION_TTL_MINUTES must be an integer between 5 and 1440',
     )
   }
+
+  const rawAttachmentMaxBytes = readString(
+    environment,
+    'TICKET_ATTACHMENT_MAX_FILE_BYTES',
+    String(10 * 1024 * 1024),
+  )
+  const attachmentMaxBytes = Number(rawAttachmentMaxBytes)
+  if (!Number.isInteger(attachmentMaxBytes) || attachmentMaxBytes < 1) {
+    throw new Error('TICKET_ATTACHMENT_MAX_FILE_BYTES must be a positive integer')
+  }
+  const rawAttachmentMaxFiles = readString(
+    environment,
+    'TICKET_ATTACHMENT_MAX_FILES',
+    '5',
+  )
+  const attachmentMaxFiles = Number(rawAttachmentMaxFiles)
+  if (!Number.isInteger(attachmentMaxFiles) || attachmentMaxFiles < 1) {
+    throw new Error('TICKET_ATTACHMENT_MAX_FILES must be a positive integer')
+  }
+  const attachmentStorageDir = readString(
+    environment,
+    'TICKET_ATTACHMENT_STORAGE_DIR',
+    'storage/tickets',
+  )
 
   const databaseUrl = readString(environment, 'DATABASE_URL')
   let parsedDatabaseUrl: URL
@@ -114,6 +141,9 @@ export function validateEnvironment(
     ...(publicWebUrl ? { PUBLIC_WEB_URL: publicWebUrl } : {}),
     SESSION_COOKIE_NAME: sessionCookieName,
     AUTH_SESSION_TTL_MINUTES: sessionTtl,
+    TICKET_ATTACHMENT_MAX_FILE_BYTES: attachmentMaxBytes,
+    TICKET_ATTACHMENT_MAX_FILES: attachmentMaxFiles,
+    TICKET_ATTACHMENT_STORAGE_DIR: attachmentStorageDir,
   }
 }
 

@@ -1,12 +1,28 @@
-const configuredApiBaseUrl = import.meta.env.DEV
-  ? '/api/v1'
-  : import.meta.env.VITE_API_BASE_URL || '/api/v1'
+export function resolveApiBaseUrl(
+  mode: string,
+  configuredUrl?: string,
+): string {
+  if (mode === 'test') return '/api/v1'
+  return configuredUrl?.trim() || '/api/v1'
+}
+
+const configuredApiBaseUrl = resolveApiBaseUrl(
+  import.meta.env.MODE,
+  import.meta.env.VITE_API_BASE_URL,
+)
 
 export function buildApiUrl(
   path: string,
   baseUrl: string = configuredApiBaseUrl,
 ): string {
-  return `${baseUrl.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, '')
+  const apiBaseUrl = normalizedBaseUrl.endsWith('/api/v1')
+    ? normalizedBaseUrl
+    : `${normalizedBaseUrl}/api/v1`
+  const normalizedPath = path
+    .replace(/^\/+/, '')
+    .replace(/^api\/v1(?:\/|(?=\?|$))/, '')
+  return `${apiBaseUrl}/${normalizedPath}`
 }
 
 export class ApiRequestError extends Error {

@@ -30,14 +30,19 @@ const navigation: NavigationItem[] = [
   },
   { to: '/assets', label: 'Assets', icon: 'assets', permission: 'assets.read' },
   {
+    to: '/assets/scan',
+    label: 'Scan asset',
+    icon: 'assets',
+    permission: 'assets.read',
+  },
+  {
     to: '/master-data',
     label: 'Master data',
     icon: 'master-data',
     permission: [
-      'assets.read',
-      'tickets.read.all',
-      'tickets.read.own',
-      'users.read',
+      'assets.update',
+      'tickets.update',
+      'users.update',
     ],
   },
   { to: '/users', label: 'Users', icon: 'users', permission: 'users.read' },
@@ -212,6 +217,8 @@ export function AuthenticatedLayout() {
     if (!mobileMenuOpen) return
     const mobileViewport = window.matchMedia('(max-width: 760px)')
     if (!mobileViewport.matches) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
     const sidebar = sidebarRef.current
     const focusableElements = () =>
       Array.from(
@@ -254,6 +261,7 @@ export function AuthenticatedLayout() {
     document.addEventListener('keydown', handleKeydown)
     window.addEventListener('resize', closeOnDesktop)
     return () => {
+      document.body.style.overflow = previousOverflow
       document.removeEventListener('keydown', handleKeydown)
       window.removeEventListener('resize', closeOnDesktop)
     }

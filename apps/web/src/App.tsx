@@ -24,6 +24,11 @@ const AssetCodeRedirectPage = lazy(() =>
     default: module.AssetCodeRedirectPage,
   })),
 )
+const AssetScanPage = lazy(() =>
+  import('./assets/AssetScanPage').then((module) => ({
+    default: module.AssetScanPage,
+  })),
+)
 const AssetsPage = lazy(() =>
   import('./assets/AssetsPage').then((module) => ({
     default: module.AssetsPage,
@@ -142,10 +147,9 @@ function App() {
                   element={
                     <RequireAnyPermission
                       permissions={[
-                        'assets.read',
-                        'tickets.read.all',
-                        'tickets.read.own',
-                        'users.read',
+                        'assets.update',
+                        'tickets.update',
+                        'users.update',
                       ]}
                     />
                   }
@@ -171,6 +175,7 @@ function App() {
                 </Route>
                 <Route element={<RequirePermission permission="assets.read" />}>
                   <Route path="/assets" element={<AssetsPage />} />
+                  <Route path="/assets/scan" element={<AssetScanPage />} />
                   <Route
                     path="/assets/by-code/:code"
                     element={<AssetCodeRedirectPage />}

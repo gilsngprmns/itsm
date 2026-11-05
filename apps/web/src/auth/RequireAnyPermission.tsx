@@ -15,11 +15,16 @@ export function RequireAnyPermission({
   if (status !== 'authenticated') {
     return <Navigate to="/login" replace state={{ from: location }} />
   }
-  if (!user) return <Navigate to="/" replace />
+  if (!user) return <Navigate to="/login" replace state={{ from: location }} />
   if (
     !permissions.some((permission) => user.permissions.includes(permission))
   ) {
-    return <Navigate to="/" replace />
+    return (
+      <main className="page">
+        <h1>Access denied</h1>
+        <p role="alert">You do not have permission to view this page.</p>
+      </main>
+    )
   }
   return <Outlet />
 }

@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config'
 import { NestFactory } from '@nestjs/core'
 import { AppModule } from './app.module'
 import { configureApplication } from './configure-application'
+import { isVercelRuntime } from './config/workspace-environment'
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule)
@@ -9,7 +10,12 @@ async function bootstrap(): Promise<void> {
 
   configureApplication(app, config)
 
-  await app.listen(config.getOrThrow<number>('PORT'), '127.0.0.1')
+  const port = config.getOrThrow<number>('PORT')
+  if (isVercelRuntime()) {
+    await app.listen(port)
+  } else {
+    await app.listen(port, '0.0.0.0')
+  }
 }
 
 void bootstrap()

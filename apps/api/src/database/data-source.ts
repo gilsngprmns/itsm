@@ -1,10 +1,18 @@
 import { config as loadEnv } from 'dotenv'
 import { DataSource } from 'typeorm'
 import { validateEnvironment } from '../config/validate-environment'
-import { resolveWorkspaceEnvironmentFile } from '../config/workspace-environment'
+import {
+  resolveWorkspaceEnvironmentFile,
+  shouldLoadWorkspaceEnvironmentFile,
+} from '../config/workspace-environment'
 import { createDatabaseOptions } from './database-options'
 
-loadEnv({ path: resolveWorkspaceEnvironmentFile(__dirname) })
+const environmentFile = shouldLoadWorkspaceEnvironmentFile()
+  ? resolveWorkspaceEnvironmentFile(__dirname)
+  : undefined
+if (environmentFile) {
+  loadEnv({ path: environmentFile })
+}
 
 const environment = validateEnvironment(process.env)
 const databaseUrl = environment.DATABASE_URL
